@@ -38,25 +38,27 @@
       display: none !important;
     }
 
-    /* 悬浮小图标 */
+    /* 悬浮小图标 (品牌 Logo 视觉重构) */
     .ios-float-icon {
       position: fixed;
       pointer-events: auto;
       width: 32px;
       height: 32px;
       padding: 0;
-      border: 1px solid rgba(255, 255, 255, 0.4);
-      border-radius: 10px;
-      background: linear-gradient(135deg, #0A84FF, #5E5CE6);
-      box-shadow: 0 4px 12px rgba(9, 132, 255, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.2);
+      border: none;
+      border-radius: 9px;
+      background: transparent;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.15s ease;
+      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.15s ease, box-shadow 0.2s ease;
       transform: scale(0.9);
       opacity: 0;
       z-index: 10000;
+      overflow: hidden;
+      user-select: none;
     }
     
     .ios-float-icon.show {
@@ -65,18 +67,21 @@
     }
 
     .ios-float-icon:hover {
-      transform: scale(1.08);
-      box-shadow: 0 6px 16px rgba(9, 132, 255, 0.45);
+      transform: scale(1.12);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.26);
     }
 
-    .ios-float-icon svg {
-      width: 18px;
-      height: 18px;
-      fill: none;
-      stroke: white;
-      stroke-width: 2.5;
-      stroke-linecap: round;
-      stroke-linejoin: round;
+    .ios-float-icon:active {
+      transform: scale(0.94);
+    }
+
+    .ios-float-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      border-radius: 9px;
+      pointer-events: none;
     }
 
     /* 翻译面板 - iOS 26 毛玻璃卡片 */
@@ -425,14 +430,16 @@
   `;
   shadowRoot.appendChild(style);
 
-  // 3. 构建 DOM 骨架
+  // 3. 构建 DOM 骨架 (引入已处理的高清品牌 Logo)
+  const brandLogoUrl = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
+    ? chrome.runtime.getURL('icons/logo.png')
+    : '/icons/logo.png';
+
   const container = document.createElement('div');
   container.className = 'ios-translate-root';
   container.innerHTML = `
-    <button id="float-icon" class="ios-float-icon hidden" title="翻译">
-      <svg viewBox="0 0 24 24">
-        <path d="M4 7h16M12 7v13M9 20h6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-      </svg>
+    <button id="float-icon" class="ios-float-icon hidden" title="Translate FY 划词翻译">
+      <img src="${brandLogoUrl}" alt="Translate FY" draggable="false" />
     </button>
 
     <div id="translate-panel" class="ios-panel hidden">
@@ -441,7 +448,7 @@
       <div class="panel-resize-handle resize-handle-right" title="左右拖动调整宽度"></div>
       <div class="panel-header" id="panel-drag-handle">
         <div class="panel-logo">
-          <svg viewBox="0 0 24 24" class="logo-mini"><path d="M4 7h16M12 7v13M9 20h6" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>
+          <img src="${brandLogoUrl}" width="16" height="16" alt="logo" style="border-radius:4px; display:block;" />
           <span>翻译</span>
         </div>
         <div class="panel-actions">

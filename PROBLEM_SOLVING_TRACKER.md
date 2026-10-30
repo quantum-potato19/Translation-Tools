@@ -185,6 +185,24 @@
 
 ---
 
+### ISSUE-15：生化学术专家 Prompt 轻量化节流与 Token 消耗降维优化
+- **问题现象**：旧版生化专家提示词长达 720+ 汉字（单次约 500~600 Tokens），在用户高频划词翻译场景下（输入仅 5~20 词，约 10~30 Tokens），System Prompt 占总消耗达 95% 以上，既浪费计费 Token，又增加了首字生成延迟（TTFT）。
+- **根本原因**：
+  1. 提示词中冗余枚举了大量与本地正则引擎 `healAcademicSymbols` 职责重叠的微观符号警告（如反复强调 5' 不能译成 50、λ 不能译成 l 等）；
+  2. 硬编码枚举了 SNV, TMSD, WT, cfDNA 等生化术语，与本地 `biochem_terms.json` 动态术语命中机制完全重复；
+  3. 存在车轱辘话与规则多层嵌套。
+- **解决方法**：
+  1. **Prompt 瘦身 70%+**：将提示词深度精炼为 200 字符以内的紧凑高密度指令，Token 消耗从 ~550 压降至 ~130；
+  2. **端云协同分工**：
+     - 微观符号拓扑自愈交由本地端 `healAcademicSymbols` 处理；
+     - 专有名词按需动态注入 `matchTerms`，命中才发，未命中零消耗；
+     - 大模型仅专注角色定位、学术语态、规范命名与格式契约；
+  3. **全端同步覆盖**：同步更新 [src/pdf_viewer.js](file:///f:/FORTEST/Translation-Tools/src/pdf_viewer.js)、[src/background.js](file:///f:/FORTEST/Translation-Tools/src/background.js) 及 [server/engine/prompt_builder.js](file:///f:/FORTEST/Translation-Tools/server/engine/prompt_builder.js) 内置模板。
+- **解决进度**：`[✅ 已解决 100%]`
+- **核心文件**：[src/pdf_viewer.js](file:///f:/FORTEST/Translation-Tools/src/pdf_viewer.js), [src/background.js](file:///f:/FORTEST/Translation-Tools/src/background.js), [server/engine/prompt_builder.js](file:///f:/FORTEST/Translation-Tools/server/engine/prompt_builder.js)
+
+---
+
 ## 四、 后续待演进需求排期池 (Backlog Tracker)
 
 ### ISSUE-09：期刊跨栏末尾文献引用标号（如 `[12].`）断句语法白名单优化

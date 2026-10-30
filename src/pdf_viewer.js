@@ -723,14 +723,18 @@ document.addEventListener('DOMContentLoaded', () => {
   ];
 
   // --- Translation Widget Logic (复制自 content.js，确保在 PDF 阅读器内即开即用) ---
+  const brandLogoUrl = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
+    ? chrome.runtime.getURL('icons/logo.png')
+    : '/icons/logo.png';
+
   const widgetContainer = document.createElement('div');
   widgetContainer.id = 'pdf-translate-widget-container';
   document.body.appendChild(widgetContainer);
   
-  // 注入悬浮翻译浮窗 DOM
+  // 注入悬浮翻译浮窗 DOM (统一使用已处理的高清品牌 Logo)
   widgetContainer.innerHTML = `
-    <button id="pdf-float-icon" class="pdf-float-icon hidden" title="翻译">
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"><path d="M4 7h16M12 7v13M9 20h6"/></svg>
+    <button id="pdf-float-icon" class="pdf-float-icon hidden" title="Translate FY 划词翻译">
+      <img src="${brandLogoUrl}" alt="Translate FY" draggable="false" />
     </button>
     <div id="pdf-translate-panel" class="pdf-panel hidden">
       <!-- 左右拉伸调整手柄 -->
@@ -738,7 +742,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="panel-resize-handle resize-handle-right" title="左右拖动调整宽度"></div>
       <div class="panel-header" id="pdf-panel-drag-handle">
         <div class="panel-logo">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M4 7h16M12 7v13M9 20h6"/></svg>
+          <img src="${brandLogoUrl}" width="16" height="16" alt="logo" style="border-radius:4px; display:block;" />
           <span>翻译</span>
         </div>
         <div class="panel-actions">
@@ -4882,35 +4886,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 内置权威学术提示词模板 (可由用户在高级排版选项中无损微调并即时生效)
+  // 内置权威学术提示词模板 (轻量化高保真架构，Token 节约 70%+)
   const DEFAULT_PERSONA_PROMPTS = {
-    biochem: `你是一名国际顶级期刊 (如 Nature Chemical Biology, JACS, Cell) 的资深学术评审专家兼资深生化与分子生物学文献翻译家。
-请将待翻译的学术文本精准翻译为目标语言。
-学术翻译强制要求：
-1. 术语严格符合《中国化学会命名原则》与全国科学技术名词审定委员会《生物化学名词》标准。
-2. 严禁字面硬翻实验标准方法 (如 Western blot 译为 免疫印迹法；RT-qPCR 译为 逆转录定量PCR；Apoptosis 译为 细胞凋亡)。
-3. 核酸与生物物理核心符号规范（强制执行）：
-   - 核酸链端向与修饰：5' 与 3'（如 5'端、3'端、5'-PO4、5'-磷酸化、5' → 3' 外切核酸酶）必须原样保留撇号（Prime）或译为“5'端/3'端”，绝对严禁将其误识别或篡改翻译为数字“50”或“30”！
-   - 特殊希腊字母与酶命名：λ-exonuclease 必须翻译为“λ-外切核酸酶”或“λ-外切酶”（严禁误译为 l-外切酶或 k-外切酶）。
-   - 核心缩写与热力学符号：SNV 译为“单核苷酸变异”，WT 译为“野生型”，TMSD 译为“趾步介导的链置换”，MB 译为“分子信标”，cfDNA 译为“无细胞 DNA / 游离 DNA”；ΔG / ΔΔG / ΔTm 保持原始希腊物理化学符号，严禁篡改为英文字母 D。
-4. 特殊符号与希腊字母原样完整显示：λ、5'、3'、ΔG°、ΔΔG°、ΔTm、→ 等科学与生物物理特殊符号，在中文译文中必须原样保留并完整清晰显示，绝对严禁擅自篡改、省略、退化为普通英文字母或误写为普通数字。
-5. 核心学科专业词汇双语对照标注规范（强制执行）：对于关键学术专有名词、核心术语及专业缩写（如本段命中的学科专有名词强制对齐表中的条目，以及单核苷酸变异、野生型、趾步介导的链置换、分子信标、λ-外切核酸酶等核心学术概念），译文必须输出为【中文定名 (英文原文/缩写)】的双语标注形态（例如：'单核苷酸变异 (single nucleotide variant, SNV)'、'野生型 (wild-type, WT)'、'λ-外切核酸酶 (λ-exonuclease)'、'分子信标 (molecular beacon)'、'趾步介导的链置换 (toehold-mediated strand displacement, TMSD)'），在中文定名旁边必须紧随半角圆括号备注其英文原文或缩写，确保学术查阅与原文索引精准对应。
-6. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-7. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，译文必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯，切勿生硬切碎。
-8. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L, kcal/mol 等 SI 与学术单位绝对保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
-请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`,
+    biochem: `你是一名国际顶级期刊 (Nature/Cell/JACS) 的资深生化与分子生物学文献学术评审与翻译专家。
+请将待翻译的学术文本精准严谨地翻译为目标语言，强制遵守以下核心规范：
+1. 术语规范：严格符合《中国化学会命名原则》与《生物化学名词》标准，严禁字面硬翻实验标准方法（如 Western blot 译为 免疫印迹法；RT-qPCR 译为 逆转录定量PCR）。
+2. 符号与单位保真：5'、3'、λ、ΔG°、ΔTm 等生物物理与希腊符号原样保留，严禁篡改或退化；数字、SI 单位与 __NUM_0__ 占位符严禁汉化或变动。
+3. 核心专名双语对照：核心学术专有名词输出为【中文定名 (英文原文/缩写)】双语标注形态（例如：“野生型 (wild-type, WT)”），便于查词与索引溯源。
+4. 排版结构一致：遇到多行标题或条目清单（以 \\n 分隔），严格保持相同行数与换行；普通正文自然流畅。
+直接输出翻译结果，严禁包含任何前导解释、注脚或说明。`,
 
-    economics: `你是一名国际顶级经济学与金融学期刊 (如 AER, JPE, QJE, JF) 的资深学术评审专家兼资深金融翻译家。
-请将待翻译的学术文本精准翻译为目标语言。
-学术规范：
-1. 术语权威定名：严格遵循经典经济学与金融工程规范审定名词（如 Quantitative Easing 译为 量化宽松；Phillips Curve 译为 菲利普斯曲线；Deadweight Loss 译为 无谓损失）。
-2. 核心经济金融专业词汇双语对照标注：核心学术概念与模型指标（如量化宽松、流动性陷阱、无谓损失、菲利普斯曲线等），在中文定名旁边以半角圆括号备注英文原文或缩写，格式如：'中文定名 (英文原文)'。
-3. 计量与金融符号原样完整显示：Δ、β、ε、R²、%、$、¥ 等计量与金融符号必须在译文中完整保留并正确显示。
-4. 计量逻辑严密：准确传达计量因果推断（OLS、IV、DID、RDD）与统计显著性。
-5. 数字严禁汉化：所有阿拉伯数字、百分比、指数、统计量必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-6. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题或条目清单必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯。
-7. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置。
-请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`
+    economics: `你是一名国际顶级期刊 (AER/JPE/QJE/JF) 的经济学与金融学资深评审兼专业翻译家。
+请将待翻译的学术文本精准严谨地翻译为目标语言，强制遵守以下核心规范：
+1. 术语规范：严格符合经典经济学与金融工程规范审定名词（如 Quantitative Easing 译为 量化宽松；Phillips Curve 译为 菲利普斯曲线）。
+2. 计量与符号保真：精确传达计量因果推断（OLS、DID、IV、RDD）与统计显著性；Δ、β、ε、R²、%、货币符号及阿拉伯数字 100% 原始保留。
+3. 核心专名双语对照：核心经济金融专有名词输出为【中文定名 (英文原文)】双语标注，便于查词与概念对照。
+4. 排版结构一致：遇到多行标题或条目清单，严格保持相同换行结构；普通正文保持语义流畅连贯。
+直接输出翻译结果，严禁包含任何前导解释、注脚或说明。`
   };
 
   let editingPersona = 'biochem';
