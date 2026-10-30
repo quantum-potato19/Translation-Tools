@@ -29,6 +29,8 @@
 | **ISSUE-06** | 论文总结 | 添加 API Key 后点击【论文总结】无任何反应 | P0 | `[✅ 已解决]` | v1.0.1 | `pdf_viewer.html`, `pdf_viewer.js` |
 | **ISSUE-07** | 排版渲染 | 三栏/双栏 PDF 跨栏断句错位、原位物理框狭窄 | P0 | `[✅ 已解决]` | v1.0.1 | `pdf_viewer.js`, `pdf_viewer.html`, `pdf_viewer.css` |
 | **ISSUE-08** | 性能架构 | **双语流视图超长篇文献虚拟滚动与 DOM 显存回收 (原风险 1)** | P1 | `[✅ 已解决]` | v1.0.1 | `pdf_viewer.js`, `pdf_viewer.css` |
+| **ISSUE-12** | 符号自愈 | 生化/经济学术特殊符号（λ, 5', 3', ΔG°）识别退化与显示自愈 | P0 | `[✅ 已解决]` | v1.0.2 | `pdf_viewer.js`, `background.js`, `content.js`, `pdf_viewer.css` |
+| **ISSUE-13** | 场景隔离 | 专名双语括号标注限制在划词场景、原位覆盖执行防溢出契约 | P1 | `[✅ 已解决]` | v1.0.2 | `prompt_builder.js`, `background.js`, `biochem_terms.json` |
 | **ISSUE-09** | 语法解析 | 跨栏末尾文献引用标号（如 `[12].`）断句误切白名单 | P2 | `[📋 规划中]` | 待排期 | `pdf_viewer.js` |
 | **ISSUE-10** | 导出中心 | 流式双语卡片排版打印及一键导出 PDF 合成 | P2 | `[📋 规划中]` | 待排期 | `pdf_viewer.js` |
 
@@ -132,6 +134,54 @@
   4. 内存占用被锁定在 $O(1)$ 常数级，支持数百页长文献丝滑翻阅。
 - **解决进度**：`[✅ 已解决 100%]`
 - **核心文件**：[src/pdf_viewer.js#L2850-L2950](file:///f:/FORTEST/Translation-Tools/src/pdf_viewer.js#L2850-L2950), [src/styles/pdf_viewer.css#L2840-L2860](file:///f:/FORTEST/Translation-Tools/src/styles/pdf_viewer.css#L2840-L2860)
+
+---
+
+### ISSUE-12：生化与计量学术特殊符号（λ, 5', 3', ΔG°）识别退化与全链路拓扑自愈
+- **问题现象**：在生化学术论文（以 CSR.pdf 为参照样本）中，希腊字母 `λ` 易被误识别为英文字母 `l` 或 `k`（如 `l-exo`、`k-Exonuclease`）；核酸 5' 与 3' 撇号易退化为普通数字 `50`、`30`；物理化学自由能变 `ΔG°`、`ΔΔG°`、`ΔTm` 易被错误篡改或省略。
+- **根本原因**：
+  1. PDF.js 文本抽取层在特定数学字体编码映射下字形代码丢失，产生退化 ASCII；
+  2. 译文输出容器缺少针对 Unicode 数学区段的后备字体栈，导致特殊符号显示缺失；
+  3. 翻译模型缺乏角色隔离的学科符号强保护提示词约束。
+- **解决方法**：
+  1. 在 [src/pdf_viewer.js](file:///f:/FORTEST/Translation-Tools/src/pdf_viewer.js#L822-L895) 和 [src/background.js](file:///f:/FORTEST/Translation-Tools/src/background.js#L577-L646) 实现角色专有的 `healAcademicSymbols` 自愈引擎；
+  2. 制定上下文白名单修饰语拓扑正则，精准修复 `5' → 3'`、`5'-PO4`、`λ-Exonuclease`、`ΔG°` 等；
+  3. 全链路更新 CSS 字体栈，注入 `"Times New Roman", "Cambria Math"`；
+  4. 扩充 3,102 条生化权威专业术语库。
+- **解决进度**：`[✅ 已解决 100%]`
+- **核心文件**：[src/pdf_viewer.js](file:///f:/FORTEST/Translation-Tools/src/pdf_viewer.js), [src/background.js](file:///f:/FORTEST/Translation-Tools/src/background.js), [src/content.js](file:///f:/FORTEST/Translation-Tools/src/content.js), [src/styles/pdf_viewer.css](file:///f:/FORTEST/Translation-Tools/src/styles/pdf_viewer.css)
+
+---
+
+### ISSUE-13：专名双语括号标注场景隔离与原排版空间防溢出契约
+- **问题现象**：原先为查词便利在所有译文中对专有名词附加英文全称和缩写括号，导致 PDF 整页原排版（In-place Overlay）中字符长度暴增 2~3 倍，严重挤压排版空间，触发字号极度缩微或物理文本框重叠溢出。
+- **根本原因**：未将“独立划词精读”与“整页原位覆盖排版”两种完全不同的业务场景在 Prompt 编排与词条输出层进行隔离。
+- **解决方法**：
+  1. **场景隔离**：在 [server/engine/prompt_builder.js](file:///f:/FORTEST/Translation-Tools/server/engine/prompt_builder.js#L3-L33) 与 [src/background.js](file:///f:/FORTEST/Translation-Tools/src/background.js#L561-L574) 引入 `isSelection` 开关；
+  2. **划词独立翻译场景**：保留完整的双语对照标注规范，输出形如 `单核苷酸变异 (single nucleotide variant, SNV)`；
+  3. **PDF 原排版批量翻译场景**：强制执行《原排版空间防溢出契约》，术语仅采用规范中文定名，严禁附加冗长英文全称括号（仅首见极短缩写允许紧随小括号），杜绝原位排版溢出。
+- **解决进度**：`[✅ 已解决 100%]`
+- **核心文件**：[server/engine/prompt_builder.js](file:///f:/FORTEST/Translation-Tools/server/engine/prompt_builder.js), [src/background.js](file:///f:/FORTEST/Translation-Tools/src/background.js), [src/content.js](file:///f:/FORTEST/Translation-Tools/src/content.js)
+
+---
+
+### ISSUE-14：划词翻译专名双语备注自由开关与极罕见修饰标记/同位素标号自愈
+- **问题现象**：
+  1. 用户在划词翻译时需要根据个人阅读习惯自由选择“是否在翻译结果中备注专有词汇原文”，避免被括号英文打扰；
+  2. 学术论文中包含极罕见的非标准修饰标记（如化学修饰星号 `*` 硫代骨架 `5'-*PO4`、`5'-*端`、`3'-*端`）或同位素标号（如 `32P-labeled 5'-end`、`[32P]`、`γ-32P-ATP`），在抽取中易被拆碎或误识别为普通数字 `50`。
+- **根本原因**：
+  1. 划词翻译此前缺少用户级双语对照持久化配置与浮窗一键即时切换控制；
+  2. 学术符号拓扑自愈引擎对包含化学星号 `*` 与同位素放射性标号的前置模式未纳入覆盖。
+- **解决方法**：
+  1. **双语备注自由开关**：
+     - 在 [options.html](file:///f:/FORTEST/Translation-Tools/options.html#L51-L61) 与 [src/options.js](file:///f:/FORTEST/Translation-Tools/src/options.js#L29-L35) 增加全局配置项 `enableBilingualNotation`；
+     - 在网页划词浮窗 [src/content.js](file:///f:/FORTEST/Translation-Tools/src/content.js#L469-L473) 与 PDF 划词浮窗 [src/pdf_viewer.js](file:///f:/FORTEST/Translation-Tools/src/pdf_viewer.js#L761-L768) 增加一键交互式 `[双语]` 胶囊按钮，点击即持久化并即时重新翻译当前文本；
+     - 在后台服务 [src/background.js](file:///f:/FORTEST/Translation-Tools/src/background.js#L1675-L1735) 与流式通道中，根据开关决定输出 `中文定名 (英文原文/缩写)` 或纯净规范中文定名；
+  2. **极罕见非标准修饰与同位素自愈**：
+     - 升级 [src/pdf_viewer.js](file:///f:/FORTEST/Translation-Tools/src/pdf_viewer.js#L860-L875) 与 [src/background.js](file:///f:/FORTEST/Translation-Tools/src/background.js#L615-L635) 的 `healAcademicSymbols` 引擎；
+     - 全面覆盖硫代骨架化学星号 `5'-*PO4`、`5'-*端`、`3'-*端`、`5'-*X`，以及同位素标号 `32P-labeled 5'-end`、`[32P]`、`γ-32P-ATP` 和中文后处理自愈。
+- **解决进度**：`[✅ 已解决 100%]`
+- **核心文件**：[options.html](file:///f:/FORTEST/Translation-Tools/options.html), [src/options.js](file:///f:/FORTEST/Translation-Tools/src/options.js), [src/content.js](file:///f:/FORTEST/Translation-Tools/src/content.js), [src/pdf_viewer.js](file:///f:/FORTEST/Translation-Tools/src/pdf_viewer.js), [src/background.js](file:///f:/FORTEST/Translation-Tools/src/background.js)
 
 ---
 

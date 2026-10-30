@@ -761,6 +761,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="panel-toolbar-row">
           <span style="font-size:11.5px; color:#8e8e93; font-weight:500;">译文</span>
           <div class="panel-btn-group">
+            <button id="pdf-panel-bilingual-btn" class="panel-icon-btn active" title="专有名词双语备注：开启中（点击切换）" style="font-size:10.5px; font-weight:600; width:auto; min-width:22px; padding:0 4px;">双语</button>
             <button id="pdf-copy-res-btn" class="panel-icon-btn" title="复制译文">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
@@ -784,6 +785,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const panelCloseBtn = document.getElementById('pdf-panel-close-btn');
   const panelPinBtn = document.getElementById('pdf-panel-pin-btn');
   const copyResBtn = document.getElementById('pdf-copy-res-btn');
+  const panelBilingualBtn = document.getElementById('pdf-panel-bilingual-btn');
   const dragHandle = document.getElementById('pdf-panel-drag-handle');
 
   const isHttpHosted = typeof location !== 'undefined' && /^https?:$/.test(location.protocol);
@@ -818,10 +820,110 @@ document.addEventListener('DOMContentLoaded', () => {
     return Boolean(AI_MODELS[engine] || engine === 'glm' || engine === 'gemini' || engine === 'deepseek' || engine.startsWith('custom_'));
   }
 
+  // 多学科/多角色学术论文特殊符号与标点拓扑自愈引擎 (按角色专有生效: biochem/economics/general)
+  function healAcademicSymbols(text, persona = currentPersona) {
+    if (!text || typeof text !== 'string') return '';
+    const targetPersona = persona || currentPersona || 'biochem';
+    let s = text;
+
+    // 通用基础排版与连字符断字通用修复
+    s = s.replace(/\bwell-\s+characterized\b/gi, 'well-characterized');
+    s = s.replace(/\bring-\s+shaped\b/gi, 'ring-shaped');
+    s = s.replace(/\binterac-\s*tions\b/gi, 'interactions');
+    s = s.replace(/\bposi-\s*tioned\b/gi, 'positioned');
+    s = s.replace(/\bmis-\s*matches\b/gi, 'mismatches');
+
+    // 1. 生化学术专家专有符号修复 (Biochem Persona Only)
+    if (targetPersona === 'biochem') {
+      // 希腊字母 λ (Lambda) 自愈 (解决加粗标题 k-Exonuclease 与正文 l-exo/l-DNA 缺陷)
+      s = s.replace(/(\b\d+(?:\.\d+)*\.?\s*)[lk]\s*[-–—]\s*Exonuclease\b/g, '$1λ-Exonuclease');
+      s = s.replace(/\b[lk]\s*[-–—]\s*Exonuclease\b/g, 'λ-Exonuclease');
+      s = s.replace(/\b[lk]\s*[-–—]\s*exonuclease\b/g, 'λ-exonuclease');
+      s = s.replace(/\b[lk]\s*[-–—]\s*exo\b/gi, 'λ-exo');
+      s = s.replace(/\b[lk]\s*[-–—]\s*DNA\b/gi, 'λ-DNA');
+      s = s.replace(/\b[lk]\s*[-–—]\s*phage\b/gi, 'λ-phage');
+      s = s.replace(/(?:bacteriophage|phage)\s+[lk]\b/gi, 'phage λ');
+
+      // 核酸五碳糖末端 5' 和 3' (Prime 撇号) 语义自愈
+      // A. 链方向性联动 (5 0 - 3 0 / 50 - 30 -> 5' → 3')
+      s = s.replace(/\b(?:5\s*0|50)\s*(?:[-–—]|to|->|→)\s*(?:3\s*0|30)\b/gi, "5' → 3'");
+      s = s.replace(/\b(?:3\s*0|30)\s*(?:[-–—]|to|->|→)\s*(?:5\s*0|50)\b/gi, "3' → 5'");
+      s = s.replace(/\b5['′]\s*(?:[-–—]|to)\s*3['′]\b/g, "5' → 3'");
+      s = s.replace(/\b3['′]\s*(?:[-–—]|to)\s*5['′]\b/g, "3' → 5'");
+
+      // B. 磷酸化基团与常规化学修饰 (5 0 -PO 4 -> 5'-PO4, 3 0 -OH -> 3'-OH)
+      s = s.replace(/\b(?:5\s*0|50)\s*[-–—]\s*PO\s*4\b/gi, "5'-PO4");
+      s = s.replace(/\b(?:3\s*0|30)\s*[-–—]\s*OH\b/gi, "3'-OH");
+      s = s.replace(/\(\s*(?:5\s*0|50)\s*[-–—]\s*PO\s*4\s*\)/gi, "(5'-PO4)");
+      s = s.replace(/5'-PO\s+4\b/g, "5'-PO4");
+      s = s.replace(/\(5'-PO4\s+\)/g, "(5'-PO4)");
+
+      // B1. 极罕见非标准修饰标记：化学修饰星号 * 硫代骨架 (Phosphorothioate backbone 5'-*PO4 / 5'-*端)
+      s = s.replace(/\b(?:5\s*0|50)\s*[-–—]?\s*\*\s*PO\s*4\b/gi, "5'-*PO4");
+      s = s.replace(/5['′]\s*[-–—]?\s*\*\s*PO\s*4\b/gi, "5'-*PO4");
+      s = s.replace(/\b(?:5\s*0|50)\s*[-–—]?\s*\*\s*[-–—]?\s*([a-zA-Z0-9]+)\b/gi, "5'-*$1");
+      s = s.replace(/\b(?:3\s*0|30)\s*[-–—]?\s*\*\s*[-–—]?\s*([a-zA-Z0-9]+)\b/gi, "3'-*$1");
+      s = s.replace(/5['′]\s*[-–—]?\s*\*\s*([a-zA-Z0-9]+)\b/gi, "5'-*$1");
+      s = s.replace(/3['′]\s*[-–—]?\s*\*\s*([a-zA-Z0-9]+)\b/gi, "3'-*$1");
+
+      // B2. 极罕见学术同位素标记标号 (如 32P-labeled 5'-end / [32P] / γ-32P-ATP)
+      s = s.replace(/(?:\[\s*|\b)(?:γ|gamma)\s*[-–—]?\s*(?:32\s*P|33\s*P)\s*\]?\s*[-–—]?\s*ATP\b/gi, 'γ-32P-ATP');
+      s = s.replace(/(?:\[\s*|\b)(32|33)\s*P\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1P-labeled');
+      s = s.replace(/(?:\[\s*|\b)(35)\s*S\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1S-labeled');
+      s = s.replace(/(?:\[\s*|\b)(14)\s*C\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1C-labeled');
+      s = s.replace(/(?:\[\s*|\b)(3)\s*H\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1H-labeled');
+      s = s.replace(/(?:\[\s*|\b)(125)\s*I\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1I-labeled');
+      s = s.replace(/(\b(?:32|33)P|\b(?:35)S)-labeled\s+(?:5\s*0|50)\s*[-–—]?\s*(end|termini|terminus|overhang|PO\s*4)\b/gi, "$1-labeled 5'-$2");
+      s = s.replace(/(\b(?:32|33)P|\b(?:35)S)\s*[-–—]?\s*(?:5\s*0|50)\s*[-–—]?\s*(end|termini|terminus|overhang|PO\s*4)\b/gi, "$1-5'-$2");
+
+      // C. 结构末端与酶切特征修饰 (结合上下文白名单精准防误伤，扩充生物标记物与化学修饰)
+      const primeContexts = '(?:phosphorylated|phosphate|hydroxyl|end|termini|terminal|terminus|overhang|protruding|carbon|splice|UTR|exonuclease|recessed|flap|stem|arm|tail|strand|dye|fluorophore|quencher|probe|primer|labeled|biotin|thiol|amine|digoxigenin|DIG|Cy3|Cy5|FAM|FITC|HEX|TET|Texas\\s*Red|Alexa\\s*\\d+|ps|phosphorothioate)';
+      const re5Prime = new RegExp('\\b(?:5\\s*0|50)\\s*[-–—]\\s*(' + primeContexts + ')\\b', 'gi');
+      s = s.replace(re5Prime, "5'-$1");
+      const re3Prime = new RegExp('\\b(?:3\\s*0|30)\\s*[-–—]\\s*(' + primeContexts + ')\\b', 'gi');
+      s = s.replace(re3Prime, "3'-$1");
+
+      // D. 介词短语修饰 (at/to/near the 50-end -> 5'-end)
+      s = s.replace(/\b(the|its|at|from|to|near|close to the|adjacent to the)\s+(?:5\s*0|50)\s*[-–—]?\s*(end|termini|terminus|overhang|side)\b/gi, "$1 5'-$2");
+      s = s.replace(/\b(the|its|at|from|to|near|close to the|adjacent to the)\s+(?:3\s*0|30)\s*[-–—]?\s*(end|termini|terminus|overhang|side)\b/gi, "$1 3'-$2");
+      s = s.replace(/\b(?:5\s*0|50)\s*[-–—]\s*(end|termini|terminus|overhang)\b/gi, "5'-$1");
+      s = s.replace(/\b(?:3\s*0|30)\s*[-–—]\s*(end|termini|terminus|overhang)\b/gi, "3'-$1");
+
+      // 热力学与物理化学自由能差/物理量 (ΔG, ΔΔG, ΔTm, ΔH, ΔS)
+      s = s.replace(/\bDD\s*G\s*(?:1|°|o)?\b/g, 'ΔΔG°');
+      s = s.replace(/\bD\s*G\s*(?:1|°|o)?\b/g, 'ΔG°');
+      s = s.replace(/\bD\s*T\s*(?:m)?\b/g, 'ΔTm');
+      s = s.replace(/\bD\s*H\s*(?:1|°|o)?\b/g, 'ΔH°');
+      s = s.replace(/\bD\s*S\s*(?:1|°|o)?\b/g, 'ΔS°');
+
+      // 译文中文后处理自愈保护 (纠正模型可能混淆的字符)
+      s = s.replace(/(?<=[^\w]|^)[lk]\s*[-–—]\s*(?:外切核酸酶|外切酶)/gi, 'λ-外切核酸酶');
+      s = s.replace(/(?:32\s*P|33\s*P)\s*[-–—]?\s*(?:标记|标号)\s*(?:的\s*)?(?:5\s*0|50)\s*端?/gi, "32P-标记 5'端");
+      s = s.replace(/(?:5\s*0|50)\s*[-–—]?\s*\*\s*PO4/gi, "5'-*PO4");
+      s = s.replace(/(?:5\s*0|50)\s*[-–—]?\s*\*\s*端/gi, "5'-*端");
+      s = s.replace(/(?:3\s*0|30)\s*[-–—]?\s*\*\s*端/gi, "3'-*端");
+      s = s.replace(/50\s*端/g, "5'端");
+      s = s.replace(/30\s*端/g, "3'端");
+      s = s.replace(/50\s*[-–—]\s*PO4/g, "5'-PO4");
+      s = s.replace(/50\s*(?:到|至|[-–—]|→)\s*30\s*端?/g, "5'到 3'端");
+    }
+
+    // 2. 经济金融专家专有符号修复 (Economics Persona Only)
+    else if (targetPersona === 'economics') {
+      s = s.replace(/\bD\s*GDP\b/g, 'ΔGDP');
+      s = s.replace(/\bD\s*CPI\b/g, 'ΔCPI');
+      s = s.replace(/\bbeta\s*([0-9]|_i|_t)\b/gi, 'β$1');
+      s = s.replace(/\bepsilon\s*([0-9]|_i|_t)\b/gi, 'ε$1');
+      s = s.replace(/\bR\s*\^?\s*2\b/g, 'R²');
+    }
+
+    return s;
+  }
+
   // 规范化 PDF 提取出的字符与标点符号 (解决连字、软连字符、特殊空白符等排版影响)
   function normalizePdfText(str) {
     if (!str || typeof str !== 'string') return '';
-    return str
+    const basic = str
       .replace(/\uFB00/g, 'ff')
       .replace(/\uFB01/g, 'fi')
       .replace(/\uFB02/g, 'fl')
@@ -836,6 +938,7 @@ document.addEventListener('DOMContentLoaded', () => {
       .replace(/[\u2018\u2019]/g, "'") // 弯单引号
       .replace(/[\u201C\u201D]/g, '"') // 弯双引号
       .replace(/[ \t]+/g, ' ');     // 压缩多余连续水平空白
+    return healAcademicSymbols(basic);
   }
 
   // 提取划词文本周围的上下文语境 (支持从 .trans-overlay-block、.textLayer 的 span 集合或段落提取)
@@ -979,7 +1082,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return merged;
     });
 
-    return cleanParagraphs.filter(Boolean).join('\n\n');
+    return cleanParagraphs.filter(Boolean).map(healAcademicSymbols).join('\n\n');
   }
 
   // 浮窗左右拉伸逻辑
@@ -1191,16 +1294,18 @@ document.addEventListener('DOMContentLoaded', () => {
         enableSelectionTranslate: true,
         autoShowPanel: false,
         defaultTargetLang: 'zh-CN',
-        defaultEngine: 'google'
+        defaultEngine: 'google',
+        enableBilingualNotation: true
       }, (res) => {
-        callback(res || { enableSelectionTranslate: true, autoShowPanel: false, defaultTargetLang: 'zh-CN', defaultEngine: 'google' });
+        callback(res || { enableSelectionTranslate: true, autoShowPanel: false, defaultTargetLang: 'zh-CN', defaultEngine: 'google', enableBilingualNotation: true });
       });
     } else {
       callback({
         enableSelectionTranslate: true,
         autoShowPanel: false,
         defaultTargetLang: 'zh-CN',
-        defaultEngine: 'google'
+        defaultEngine: 'google',
+        enableBilingualNotation: true
       });
     }
   }
@@ -1504,7 +1609,14 @@ document.addEventListener('DOMContentLoaded', () => {
         translatePanel.classList.remove('hidden');
         translatePanel.getBoundingClientRect();
         translatePanel.classList.add('show');
-        doTranslation(text, chosenEngine, targetLang, activeModel, currentSelectionContext);
+        getSettings((settings) => {
+          if (panelBilingualBtn) {
+            const isBilingual = settings.enableBilingualNotation !== false;
+            panelBilingualBtn.classList.toggle('active', isBilingual);
+            panelBilingualBtn.title = isBilingual ? '专有名词双语备注：开启中（点击切换）' : '专有名词双语备注：已关闭（点击切换）';
+          }
+          doTranslation(text, chosenEngine, targetLang, activeModel, currentSelectionContext);
+        });
       });
     });
   }
@@ -1592,7 +1704,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (seq !== selectionTranslateSeq) return; // 序列号不匹配，丢弃过期竞态响应
       panelLoader.classList.add('hidden');
       panelResultText.classList.remove('hidden');
-      panelResultText.textContent = translation;
+      panelResultText.textContent = healAcademicSymbols(translation, currentPersona);
       panelResultText.classList.remove('error');
     };
 
@@ -1612,47 +1724,51 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // 优先通过 Chrome 扩展底层通道通信
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({
-        action: 'translate',
-        text: text,
-        engine: engine,
-        targetLang: targetLang,
-        model: modelName,
-        context: context,
-        persona: currentPersona
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          if (isHttpHosted) {
-            // 本地 HTTP 托管模式兜底
-            fetchLocalTranslate(text, targetLang, context, currentPersona)
-              .then(onTranslateSuccess)
-              .catch(e => onTranslateError(e.message));
-          } else {
-            onTranslateError(chrome.runtime.lastError.message);
+    getSettings((settings) => {
+      const enableBilingual = settings.enableBilingualNotation !== false;
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({
+          action: 'translate',
+          text: text,
+          engine: engine,
+          targetLang: targetLang,
+          model: modelName,
+          context: context,
+          persona: currentPersona,
+          enableBilingualNotation: enableBilingual
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            if (isHttpHosted) {
+              // 本地 HTTP 托管模式兜底
+              fetchLocalTranslate(text, targetLang, context, currentPersona)
+                .then(onTranslateSuccess)
+                .catch(e => onTranslateError(e.message));
+            } else {
+              onTranslateError(chrome.runtime.lastError.message);
+            }
+            return;
           }
-          return;
-        }
 
-        if (!response) {
-          onTranslateError('翻译超时或服务未响应');
-          return;
-        }
+          if (!response) {
+            onTranslateError('翻译超时或服务未响应');
+            return;
+          }
 
-        if (response.success) {
-          onTranslateSuccess(response.translation);
-        } else {
-          onTranslateError(response.error);
-        }
-      });
-    } else if (isHttpHosted) {
-      // 本地独立 HTTP 服务模式直接请求后端 API
-      fetchLocalTranslate(text, targetLang, context, currentPersona)
-        .then(onTranslateSuccess)
-        .catch(e => onTranslateError(e.message));
-    } else {
-      onTranslateError('翻译服务通道不可用');
-    }
+          if (response.success) {
+            onTranslateSuccess(response.translation);
+          } else {
+            onTranslateError(response.error);
+          }
+        });
+      } else if (isHttpHosted) {
+        // 本地独立 HTTP 服务模式直接请求后端 API
+        fetchLocalTranslate(text, targetLang, context, currentPersona)
+          .then(onTranslateSuccess)
+          .catch(e => onTranslateError(e.message));
+      } else {
+        onTranslateError('翻译服务通道不可用');
+      }
+    });
   }
 
   floatIcon.addEventListener('click', (e) => {
@@ -1678,6 +1794,38 @@ document.addEventListener('DOMContentLoaded', () => {
     panelPinBtn.classList.toggle('active', isPinned);
     panelPinBtn.title = isPinned ? '取消固定' : '固定浮窗';
   });
+
+  // 专有名词双语对照开关
+  if (panelBilingualBtn) {
+    panelBilingualBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      getSettings((settings) => {
+        const nextVal = !(settings.enableBilingualNotation !== false);
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.set({ enableBilingualNotation: nextVal }, () => {
+            panelBilingualBtn.classList.toggle('active', nextVal);
+            panelBilingualBtn.title = nextVal ? '专有名词双语备注：开启中（点击切换）' : '专有名词双语备注：已关闭（点击切换）';
+            if (currentSelectedText && !translatePanel.classList.contains('hidden')) {
+              const activeModel = panelModelSelect ? panelModelSelect.value : '';
+              const { effectiveEngine, effectiveTargetLang } = getEffectiveTranslateConfig(settings);
+              doTranslation(currentSelectedText, effectiveEngine, effectiveTargetLang, activeModel, currentSelectionContext);
+            }
+          });
+        }
+      });
+    });
+  }
+
+  // 监听 storage 变更，同步浮窗开关状态
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes) => {
+      if (changes.enableBilingualNotation && panelBilingualBtn) {
+        const isBilingual = changes.enableBilingualNotation.newValue !== false;
+        panelBilingualBtn.classList.toggle('active', isBilingual);
+        panelBilingualBtn.title = isBilingual ? '专有名词双语备注：开启中（点击切换）' : '专有名词双语备注：已关闭（点击切换）';
+      }
+    });
+  }
 
   // Escape 键快捷关闭浮层
   document.addEventListener('keydown', (e) => {
@@ -2007,6 +2155,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // 高清屏 / Windows 150% 屏幕缩放物理像素比安全获取函数 (上限限制 3x 兼顾极速与低显存)
+  function getOutputScale() {
+    return Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
+  }
+
   // --- 缩略图生成器 (异步懒加载) ---
   let thumbnailObserver = null;
   function generateThumbnails(pdf) {
@@ -2064,10 +2217,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const vp = page.getViewport({ scale: 0.22 });
             const canvas = card.querySelector('canvas');
             if (canvas) {
-              canvas.width = vp.width;
-              canvas.height = vp.height;
+              const outScale = Math.min(getOutputScale(), 2);
+              canvas.width = Math.floor(vp.width * outScale);
+              canvas.height = Math.floor(vp.height * outScale);
+              canvas.style.width = `${Math.floor(vp.width)}px`;
+              canvas.style.height = `${Math.floor(vp.height)}px`;
               const ctx = canvas.getContext('2d');
-              await page.render({ canvasContext: ctx, viewport: vp }).promise;
+              const transform = outScale !== 1 ? [outScale, 0, 0, outScale, 0, 0] : null;
+              await page.render({ canvasContext: ctx, transform, viewport: vp }).promise;
             }
           } catch (e) {
             console.warn(`缩略图第 ${pNum} 页渲染跳过:`, e);
@@ -2246,6 +2403,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const viewport = page.getViewport({ scale: currentScale });
       const wPx = Math.round(viewport.width);
       const hPx = Math.round(viewport.height);
+      const outputScale = getOutputScale();
 
       stageContainer.style.width = `${wPx}px`;
       stageContainer.style.height = `${hPx}px`;
@@ -2256,20 +2414,23 @@ document.addEventListener('DOMContentLoaded', () => {
         canvas = document.createElement('canvas');
         stageContainer.appendChild(canvas);
       }
-      canvas.width = wPx;
-      canvas.height = hPx;
+      canvas.width = Math.floor(wPx * outputScale);
+      canvas.height = Math.floor(hPx * outputScale);
+      canvas.style.width = `${wPx}px`;
+      canvas.style.height = `${hPx}px`;
       const ctx = canvas.getContext('2d');
 
       // 极速硬件加速：优先复用左侧已渲染 Canvas 图像（0延迟、无闪烁）
       const leftContainer = viewerContainer.querySelector(`.page-container[data-page-num="${targetPageNum}"]`);
       const leftCanvas = leftContainer ? leftContainer.querySelector('canvas') : null;
-      if (leftCanvas && leftCanvas.width === wPx && leftCanvas.height === hPx) {
+      if (leftCanvas && leftCanvas.width === canvas.width && leftCanvas.height === canvas.height) {
         ctx.drawImage(leftCanvas, 0, 0);
       } else {
         if (currentTransStageRenderTask) {
           try { currentTransStageRenderTask.cancel(); } catch(e){}
         }
-        currentTransStageRenderTask = page.render({ canvasContext: ctx, viewport });
+        const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+        currentTransStageRenderTask = page.render({ canvasContext: ctx, transform, viewport });
         await currentTransStageRenderTask.promise;
         currentTransStageRenderTask = null;
       }
@@ -2310,20 +2471,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     ctx.strokeStyle = stroke.color || (isHighlighter ? '#FFF176' : '#0078D4');
     ctx.globalAlpha = isHighlighter ? (stroke.opacity !== undefined ? stroke.opacity : currentHighlighterOpacity) : 1.0;
-    ctx.lineWidth = (stroke.baseWidth || (isHighlighter ? 16 : 3)) * (currentScale || 1.0);
+    const dpr = getOutputScale();
+    ctx.lineWidth = (stroke.baseWidth || (isHighlighter ? 16 : 3)) * (currentScale || 1.0) * dpr;
     ctx.lineCap = isHighlighter ? 'square' : 'round';
     ctx.lineJoin = 'round';
 
-    const firstX = stroke.points[0].nx !== undefined ? stroke.points[0].nx * cw : stroke.points[0].x;
-    const firstY = stroke.points[0].ny !== undefined ? stroke.points[0].ny * ch : stroke.points[0].y;
+    const firstX = stroke.points[0].nx !== undefined ? stroke.points[0].nx * cw : stroke.points[0].x * dpr;
+    const firstY = stroke.points[0].ny !== undefined ? stroke.points[0].ny * ch : stroke.points[0].y * dpr;
     ctx.moveTo(firstX, firstY);
 
     if (stroke.points.length === 1) {
       ctx.lineTo(firstX + 0.2, firstY);
     } else {
       for (let i = 1; i < stroke.points.length; i++) {
-        const px = stroke.points[i].nx !== undefined ? stroke.points[i].nx * cw : stroke.points[i].x;
-        const py = stroke.points[i].ny !== undefined ? stroke.points[i].ny * ch : stroke.points[i].y;
+        const px = stroke.points[i].nx !== undefined ? stroke.points[i].nx * cw : stroke.points[i].x * dpr;
+        const py = stroke.points[i].ny !== undefined ? stroke.points[i].ny * ch : stroke.points[i].y * dpr;
         ctx.lineTo(px, py);
       }
     }
@@ -2356,8 +2518,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // 判断触点是否碰撞命中笔画 (用于整笔橡皮擦)
   function isPointHitStroke(pt, stroke, cw, ch) {
     if (!stroke.points || stroke.points.length === 0) return false;
-    const strokeWidth = (stroke.baseWidth || 3) * (currentScale || 1.0);
-    const tolerance = Math.max(12, strokeWidth / 2 + 10);
+    const dpr = getOutputScale();
+    const strokeWidth = (stroke.baseWidth || 3) * (currentScale || 1.0) * dpr;
+    const tolerance = Math.max(12 * dpr, strokeWidth / 2 + 10 * dpr);
     const tol2 = tolerance * tolerance;
 
     for (let i = 0; i < stroke.points.length - 1; i++) {
@@ -2501,16 +2664,20 @@ document.addEventListener('DOMContentLoaded', () => {
       const viewport = page.getViewport({ scale: currentScale });
       const wPx = Math.round(viewport.width);
       const hPx = Math.round(viewport.height);
+      const outputScale = getOutputScale();
 
       pageContainer.style.width = `${wPx}px`;
       pageContainer.style.height = `${hPx}px`;
 
       const canvas = document.createElement('canvas');
-      canvas.width = wPx;
-      canvas.height = hPx;
+      canvas.width = Math.floor(wPx * outputScale);
+      canvas.height = Math.floor(hPx * outputScale);
+      canvas.style.width = `${wPx}px`;
+      canvas.style.height = `${hPx}px`;
       const context = canvas.getContext('2d');
 
-      await page.render({ canvasContext: context, viewport: viewport }).promise;
+      const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+      await page.render({ canvasContext: context, transform: transform, viewport: viewport }).promise;
       if (renderId && renderId !== currentRenderId) return;
 
       // 文本选择层构建
@@ -2540,8 +2707,10 @@ document.addEventListener('DOMContentLoaded', () => {
       // 挂载画笔批注 Canvas 图层
       const annotCanvas = document.createElement('canvas');
       annotCanvas.className = 'annotation-canvas';
-      annotCanvas.width = wPx;
-      annotCanvas.height = hPx;
+      annotCanvas.width = Math.floor(wPx * outputScale);
+      annotCanvas.height = Math.floor(hPx * outputScale);
+      annotCanvas.style.width = `${wPx}px`;
+      annotCanvas.style.height = `${hPx}px`;
       annotCanvas.dataset.pageNum = pageNum;
       pageContainer.appendChild(annotCanvas);
       redrawPageAnnotations(pageNum, annotCanvas);
@@ -2685,10 +2854,14 @@ document.addEventListener('DOMContentLoaded', () => {
       const cW = canvas.width;
       const cH = canvas.height;
 
-      const left = Math.round(box.x * scale);
-      const top = Math.round((pageHeight - box.y - box.h) * scale);
-      const width = Math.round(box.w * scale);
-      const height = Math.round(box.h * scale);
+      const canvasOutputScale = (canvas.style && canvas.style.width)
+        ? (canvas.width / parseFloat(canvas.style.width))
+        : 1;
+
+      const left = Math.round(box.x * scale * canvasOutputScale);
+      const top = Math.round((pageHeight - box.y - box.h) * scale * canvasOutputScale);
+      const width = Math.round(box.w * scale * canvasOutputScale);
+      const height = Math.round(box.h * scale * canvasOutputScale);
 
       // 1. 围绕包围盒四周多点采样底色 (上、下、左、右)
       const bgCandidates = [
@@ -2771,6 +2944,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // 1. 如果提供了舞台底图 Canvas，先执行无痕底色擦除 (Inpainting)，抹除原版英文，防止透光重叠
     if (stageCanvas && stageCanvas.getContext && opacityModeIndex !== 2) {
       const ctx = stageCanvas.getContext('2d');
+      const canvasOutputScale = (stageCanvas.style && stageCanvas.style.width)
+        ? (stageCanvas.width / parseFloat(stageCanvas.style.width))
+        : 1;
+
+      ctx.save();
+      if (canvasOutputScale && canvasOutputScale !== 1) {
+        ctx.scale(canvasOutputScale, canvasOutputScale);
+      }
+
       blocks.forEach(block => {
         if (!block.box || block.type === 'formula' || !block.transText) return;
         const left = Math.round(block.box.x * scale);
@@ -2785,6 +2967,7 @@ document.addEventListener('DOMContentLoaded', () => {
           ctx.fillRect(Math.max(0, left - 2), Math.max(0, top - 2), width + 4, height + 4);
         }
       });
+      ctx.restore();
     }
 
     // 2. 原位挂载排版文本
@@ -3711,7 +3894,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function flushParagraph() {
       if (currentParagraphLines.length === 0) return;
-      const mergedText = reconstructPdfParagraphs(currentParagraphLines.map(l => l.text).join('\n'));
+      const mergedText = healAcademicSymbols(reconstructPdfParagraphs(currentParagraphLines.map(l => l.text).join('\n')));
       if (mergedText && mergedText.trim()) {
         const minX = Math.min(...currentParagraphLines.map(l => l.box.x));
         const maxX = Math.max(...currentParagraphLines.map(l => l.box.x + l.box.w));
@@ -4308,7 +4491,8 @@ document.addEventListener('DOMContentLoaded', () => {
         task.block.untranslated = !rawTrans;
         if (!rawTrans) missingCount++;
         const base = rawTrans || task.block.originalText;
-        task.block.transText = task.tokenMap ? restoreInlineFormulas(base, task.tokenMap) : base;
+        const restored = task.tokenMap ? restoreInlineFormulas(base, task.tokenMap) : base;
+        task.block.transText = healAcademicSymbols(restored, currentPersona);
       });
       blocks.forEach(b => { b.targetLang = targetLang; });
       if (missingCount > 0) {
@@ -4705,21 +4889,27 @@ document.addEventListener('DOMContentLoaded', () => {
 学术翻译强制要求：
 1. 术语严格符合《中国化学会命名原则》与全国科学技术名词审定委员会《生物化学名词》标准。
 2. 严禁字面硬翻实验标准方法 (如 Western blot 译为 免疫印迹法；RT-qPCR 译为 逆转录定量PCR；Apoptosis 译为 细胞凋亡)。
-3. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-4. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词、机构名称、国际组织、学术专属名词仅在当前页首次出现时紧跟半角括号备注原文；后续重复出现时直接采用中文定名，严禁重复附加英文括号，坚决防止排版溢出。
-5. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，译文必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯，切勿生硬切碎。
-6. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L 等 SI 单位绝对保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
+3. 核酸与生物物理核心符号规范（强制执行）：
+   - 核酸链端向与修饰：5' 与 3'（如 5'端、3'端、5'-PO4、5'-磷酸化、5' → 3' 外切核酸酶）必须原样保留撇号（Prime）或译为“5'端/3'端”，绝对严禁将其误识别或篡改翻译为数字“50”或“30”！
+   - 特殊希腊字母与酶命名：λ-exonuclease 必须翻译为“λ-外切核酸酶”或“λ-外切酶”（严禁误译为 l-外切酶或 k-外切酶）。
+   - 核心缩写与热力学符号：SNV 译为“单核苷酸变异”，WT 译为“野生型”，TMSD 译为“趾步介导的链置换”，MB 译为“分子信标”，cfDNA 译为“无细胞 DNA / 游离 DNA”；ΔG / ΔΔG / ΔTm 保持原始希腊物理化学符号，严禁篡改为英文字母 D。
+4. 特殊符号与希腊字母原样完整显示：λ、5'、3'、ΔG°、ΔΔG°、ΔTm、→ 等科学与生物物理特殊符号，在中文译文中必须原样保留并完整清晰显示，绝对严禁擅自篡改、省略、退化为普通英文字母或误写为普通数字。
+5. 核心学科专业词汇双语对照标注规范（强制执行）：对于关键学术专有名词、核心术语及专业缩写（如本段命中的学科专有名词强制对齐表中的条目，以及单核苷酸变异、野生型、趾步介导的链置换、分子信标、λ-外切核酸酶等核心学术概念），译文必须输出为【中文定名 (英文原文/缩写)】的双语标注形态（例如：'单核苷酸变异 (single nucleotide variant, SNV)'、'野生型 (wild-type, WT)'、'λ-外切核酸酶 (λ-exonuclease)'、'分子信标 (molecular beacon)'、'趾步介导的链置换 (toehold-mediated strand displacement, TMSD)'），在中文定名旁边必须紧随半角圆括号备注其英文原文或缩写，确保学术查阅与原文索引精准对应。
+6. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
+7. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，译文必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯，切勿生硬切碎。
+8. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L, kcal/mol 等 SI 与学术单位绝对保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
 请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`,
 
     economics: `你是一名国际顶级经济学与金融学期刊 (如 AER, JPE, QJE, JF) 的资深学术评审专家兼资深金融翻译家。
 请将待翻译的学术文本精准翻译为目标语言。
 学术规范：
 1. 术语权威定名：严格遵循经典经济学与金融工程规范审定名词（如 Quantitative Easing 译为 量化宽松；Phillips Curve 译为 菲利普斯曲线；Deadweight Loss 译为 无谓损失）。
-2. 计量逻辑严密：准确传达计量因果推断（OLS、IV、DID、RDD）与统计显著性。
-3. 数字严禁汉化：所有阿拉伯数字、百分比、指数、统计量必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-4. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词仅在当前页首次出现时紧跟半角括号备注原文，后续重复出现时直接采用中文定名，严禁重复附加英文括号。
-5. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题或条目清单必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯。
-6. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置。
+2. 核心经济金融专业词汇双语对照标注：核心学术概念与模型指标（如量化宽松、流动性陷阱、无谓损失、菲利普斯曲线等），在中文定名旁边以半角圆括号备注英文原文或缩写，格式如：'中文定名 (英文原文)'。
+3. 计量与金融符号原样完整显示：Δ、β、ε、R²、%、$、¥ 等计量与金融符号必须在译文中完整保留并正确显示。
+4. 计量逻辑严密：准确传达计量因果推断（OLS、IV、DID、RDD）与统计显著性。
+5. 数字严禁汉化：所有阿拉伯数字、百分比、指数、统计量必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
+6. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题或条目清单必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯。
+7. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置。
 请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`
   };
 
@@ -6226,4 +6416,31 @@ document.addEventListener('DOMContentLoaded', () => {
       setViewMode('flow');
     }
   });
+
+  // --- 监听屏幕缩放 / DPI 变化动态高清自适应更新 ---
+  let lastDevicePixelRatio = window.devicePixelRatio || 1;
+  function handleDprChange() {
+    const currentDpr = window.devicePixelRatio || 1;
+    if (Math.abs(currentDpr - lastDevicePixelRatio) > 0.05) {
+      lastDevicePixelRatio = currentDpr;
+      if (currentPdf) {
+        renderedPages.clear();
+        setupVirtualObserver(++currentRenderId);
+        if (translationPane && !translationPane.classList.contains('hidden')) {
+          renderTransStageForPage(currentPage);
+        }
+      }
+    }
+  }
+
+  window.addEventListener('resize', handleDprChange);
+  if (window.matchMedia) {
+    try {
+      const dprMedia = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      if (dprMedia && dprMedia.addEventListener) {
+        dprMedia.addEventListener('change', handleDprChange);
+      }
+    } catch (e) {}
+  }
 });
+

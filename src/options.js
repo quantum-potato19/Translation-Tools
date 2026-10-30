@@ -28,6 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // 2. 绑定通用设置与官方服务 DOM 元素
   const enableSelectionTranslate = document.getElementById('enable-selection-translate');
   const autoShowPanel = document.getElementById('auto-show-panel');
+  const enableBilingualNotation = document.getElementById('enable-bilingual-notation');
   const triggerMode = document.getElementById('trigger-mode');
   const defaultTargetLang = document.getElementById('default-target-lang');
   const defaultEngine = document.getElementById('default-engine');
@@ -148,6 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.get({
       enableSelectionTranslate: true,
       autoShowPanel: false,
+      enableBilingualNotation: true,
       triggerMode: 'direct',
       defaultTargetLang: 'zh-CN',
       defaultEngine: 'google',
@@ -164,6 +166,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }, (settings) => {
       if (enableSelectionTranslate) enableSelectionTranslate.checked = settings.enableSelectionTranslate;
       if (autoShowPanel) autoShowPanel.checked = settings.autoShowPanel;
+      if (enableBilingualNotation) enableBilingualNotation.checked = (settings.enableBilingualNotation !== false);
       if (triggerMode) triggerMode.value = settings.triggerMode || 'direct';
       if (defaultTargetLang) defaultTargetLang.value = settings.defaultTargetLang;
       
@@ -447,6 +450,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.set({
       enableSelectionTranslate: enableSelectionTranslate.checked,
       autoShowPanel: autoShowPanel.checked,
+      enableBilingualNotation: enableBilingualNotation ? enableBilingualNotation.checked : true,
       triggerMode: triggerMode ? triggerMode.value : 'direct',
       defaultTargetLang: defaultTargetLang.value,
       defaultEngine: defaultEngine.value,
@@ -590,7 +594,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 监听输入并实时保存及动态刷新默认引擎列表
   const inputsToWatch = [
-    enableSelectionTranslate, autoShowPanel, triggerMode, defaultTargetLang, defaultEngine,
+    enableSelectionTranslate, autoShowPanel, enableBilingualNotation, triggerMode, defaultTargetLang, defaultEngine,
     glmApiKey, glmModel, geminiApiKey, geminiModel, deepseekApiKey, deepseekModel,
     deeplApiKey, deeplEndpoint, youdaoAppKey, youdaoAppSecret, pdfAction
   ].filter(Boolean);

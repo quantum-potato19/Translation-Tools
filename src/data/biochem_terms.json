@@ -27335,6 +27335,440 @@
         "de": "Pyrrolidin",
         "fr": ""
       }
+    },
+    "λ-exonuclease": {
+      "en": "λ-Exonuclease",
+      "zh": "λ-外切核酸酶",
+      "abbr": "λ-exo",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "lambda exonuclease": {
+      "en": "Lambda Exonuclease",
+      "zh": "λ-外切核酸酶",
+      "abbr": "λ-exo",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "λ-exo": {
+      "en": "λ-Exo",
+      "zh": "λ-外切酶",
+      "abbr": "",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "5' → 3' exonuclease": {
+      "en": "5' → 3' Exonuclease",
+      "zh": "5'到 3'外切核酸酶",
+      "abbr": "",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "5'-to-3' exonuclease": {
+      "en": "5'-to-3' Exonuclease",
+      "zh": "5'到 3'外切核酸酶",
+      "abbr": "",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "3' → 5' exonuclease": {
+      "en": "3' → 5' Exonuclease",
+      "zh": "3'到 5'外切核酸酶",
+      "abbr": "",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "duplex-specific nuclease": {
+      "en": "Duplex-Specific Nuclease",
+      "zh": "双链特异性核酸酶",
+      "abbr": "DSN",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "dsn": {
+      "en": "Duplex-Specific Nuclease",
+      "zh": "双链特异性核酸酶",
+      "abbr": "DSN",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "ribonuclease h": {
+      "en": "Ribonuclease H",
+      "zh": "核糖核酸酶 H",
+      "abbr": "RNase H",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "rnase h": {
+      "en": "RNase H",
+      "zh": "核糖核酸酶 H",
+      "abbr": "",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "rnase h1": {
+      "en": "RNase H1",
+      "zh": "核糖核酸酶 H1",
+      "abbr": "",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "rnase h2": {
+      "en": "RNase H2",
+      "zh": "核糖核酸酶 H2",
+      "abbr": "",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "flap endonuclease 1": {
+      "en": "Flap Endonuclease 1",
+      "zh": "瓣状核酸内切酶 1",
+      "abbr": "FEN1",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "fen1": {
+      "en": "Flap Endonuclease 1",
+      "zh": "瓣状核酸内切酶 1",
+      "abbr": "FEN1",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "t7 endonuclease i": {
+      "en": "T7 Endonuclease I",
+      "zh": "T7 核酸内切酶 I",
+      "abbr": "T7E1",
+      "category": "核酸化学/酶催化",
+      "otherLangs": {}
+    },
+    "single nucleotide variant": {
+      "en": "Single Nucleotide Variant",
+      "zh": "单核苷酸变异",
+      "abbr": "SNV",
+      "category": "分子遗传学/突变检测",
+      "otherLangs": {}
+    },
+    "single nucleotide variants": {
+      "en": "Single Nucleotide Variants",
+      "zh": "单核苷酸变异",
+      "abbr": "SNVs",
+      "category": "分子遗传学/突变检测",
+      "otherLangs": {}
+    },
+    "snv": {
+      "en": "Single Nucleotide Variant",
+      "zh": "单核苷酸变异",
+      "abbr": "SNV",
+      "category": "分子遗传学/突变检测",
+      "otherLangs": {}
+    },
+    "snvs": {
+      "en": "Single Nucleotide Variants",
+      "zh": "单核苷酸变异",
+      "abbr": "SNVs",
+      "category": "分子遗传学/突变检测",
+      "otherLangs": {}
+    },
+    "wild-type": {
+      "en": "Wild-Type",
+      "zh": "野生型",
+      "abbr": "WT",
+      "category": "分子遗传学",
+      "otherLangs": {}
+    },
+    "somatic mutation": {
+      "en": "Somatic Mutation",
+      "zh": "体细胞突变",
+      "abbr": "",
+      "category": "肿瘤生物学/分子病理",
+      "otherLangs": {}
+    },
+    "driver mutation": {
+      "en": "Driver Mutation",
+      "zh": "驱动突变",
+      "abbr": "",
+      "category": "肿瘤生物学/分子病理",
+      "otherLangs": {}
+    },
+    "allele frequency": {
+      "en": "Allele Frequency",
+      "zh": "等位基因频率",
+      "abbr": "AF",
+      "category": "分子遗传学",
+      "otherLangs": {}
+    },
+    "synonymous mutation": {
+      "en": "Synonymous Mutation",
+      "zh": "同义突变",
+      "abbr": "",
+      "category": "分子遗传学",
+      "otherLangs": {}
+    },
+    "base-pair mismatch": {
+      "en": "Base-Pair Mismatch",
+      "zh": "碱基对错配",
+      "abbr": "",
+      "category": "核酸化学/生物物理",
+      "otherLangs": {}
+    },
+    "discrimination factor": {
+      "en": "Discrimination Factor",
+      "zh": "区分因子",
+      "abbr": "DF",
+      "category": "分析化学/分子诊断",
+      "otherLangs": {}
+    },
+    "molecular beacon": {
+      "en": "Molecular Beacon",
+      "zh": "分子信标",
+      "abbr": "MB",
+      "category": "生物传感器/荧光探针",
+      "otherLangs": {}
+    },
+    "molecular beacons": {
+      "en": "Molecular Beacons",
+      "zh": "分子信标",
+      "abbr": "MBs",
+      "category": "生物传感器/荧光探针",
+      "otherLangs": {}
+    },
+    "toehold-mediated strand displacement": {
+      "en": "Toehold-Mediated Strand Displacement",
+      "zh": "趾步介导的链置换",
+      "abbr": "TMSD",
+      "category": "DNA纳米技术/核酸化学",
+      "otherLangs": {}
+    },
+    "tmsd": {
+      "en": "Toehold-Mediated Strand Displacement",
+      "zh": "趾步介导的链置换",
+      "abbr": "TMSD",
+      "category": "DNA纳米技术/核酸化学",
+      "otherLangs": {}
+    },
+    "strand displacement reaction": {
+      "en": "Strand Displacement Reaction",
+      "zh": "链置换反应",
+      "abbr": "SDR",
+      "category": "DNA纳米技术/核酸化学",
+      "otherLangs": {}
+    },
+    "cell-free dna": {
+      "en": "Cell-Free DNA",
+      "zh": "游离 DNA / 无细胞 DNA",
+      "abbr": "cfDNA",
+      "category": "临床检验/液体活检",
+      "otherLangs": {}
+    },
+    "cfdna": {
+      "en": "Cell-Free DNA",
+      "zh": "游离 DNA",
+      "abbr": "cfDNA",
+      "category": "临床检验/液体活检",
+      "otherLangs": {}
+    },
+    "circulating tumor dna": {
+      "en": "Circulating Tumor DNA",
+      "zh": "循环肿瘤 DNA",
+      "abbr": "ctDNA",
+      "category": "临床检验/液体活检",
+      "otherLangs": {}
+    },
+    "ctdna": {
+      "en": "Circulating Tumor DNA",
+      "zh": "循环肿瘤 DNA",
+      "abbr": "ctDNA",
+      "category": "临床检验/液体活检",
+      "otherLangs": {}
+    },
+    "hairpin structure": {
+      "en": "Hairpin Structure",
+      "zh": "发卡结构",
+      "abbr": "",
+      "category": "核酸二级结构",
+      "otherLangs": {}
+    },
+    "fluorophore": {
+      "en": "Fluorophore",
+      "zh": "荧光基团",
+      "abbr": "",
+      "category": "荧光探针/分析化学",
+      "otherLangs": {}
+    },
+    "fluorophores": {
+      "en": "Fluorophores",
+      "zh": "荧光基团",
+      "abbr": "",
+      "category": "荧光探针/分析化学",
+      "otherLangs": {}
+    },
+    "quencher": {
+      "en": "Quencher",
+      "zh": "猝灭基团",
+      "abbr": "",
+      "category": "荧光探针/分析化学",
+      "otherLangs": {}
+    },
+    "quenchers": {
+      "en": "Quenchers",
+      "zh": "猝灭基团",
+      "abbr": "",
+      "category": "荧光探针/分析化学",
+      "otherLangs": {}
+    },
+    "fluorophore-quencher": {
+      "en": "Fluorophore-Quencher",
+      "zh": "荧光-猝灭",
+      "abbr": "",
+      "category": "荧光探针/分析化学",
+      "otherLangs": {}
+    },
+    "loop-mediated isothermal amplification": {
+      "en": "Loop-Mediated Isothermal Amplification",
+      "zh": "环介导等温扩增",
+      "abbr": "LAMP",
+      "category": "核酸扩增/分子诊断",
+      "otherLangs": {}
+    },
+    "lamp": {
+      "en": "Loop-Mediated Isothermal Amplification",
+      "zh": "环介导等温扩增",
+      "abbr": "LAMP",
+      "category": "核酸扩增/分子诊断",
+      "otherLangs": {}
+    },
+    "recombinase polymerase amplification": {
+      "en": "Recombinase Polymerase Amplification",
+      "zh": "重组酶聚合酶扩增",
+      "abbr": "RPA",
+      "category": "核酸扩增/分子诊断",
+      "otherLangs": {}
+    },
+    "rpa": {
+      "en": "Recombinase Polymerase Amplification",
+      "zh": "重组酶聚合酶扩增",
+      "abbr": "RPA",
+      "category": "核酸扩增/分子诊断",
+      "otherLangs": {}
+    },
+    "rolling circle amplification": {
+      "en": "Rolling Circle Amplification",
+      "zh": "滚环扩增",
+      "abbr": "RCA",
+      "category": "核酸扩增/分子诊断",
+      "otherLangs": {}
+    },
+    "rca": {
+      "en": "Rolling Circle Amplification",
+      "zh": "滚环扩增",
+      "abbr": "RCA",
+      "category": "核酸扩增/分子诊断",
+      "otherLangs": {}
+    },
+    "hybridization chain reaction": {
+      "en": "Hybridization Chain Reaction",
+      "zh": "杂交链式反应",
+      "abbr": "HCR",
+      "category": "核酸扩增/分子诊断",
+      "otherLangs": {}
+    },
+    "hcr": {
+      "en": "Hybridization Chain Reaction",
+      "zh": "杂交链式反应",
+      "abbr": "HCR",
+      "category": "核酸扩增/分子诊断",
+      "otherLangs": {}
+    },
+    "lateral flow assay": {
+      "en": "Lateral Flow Assay",
+      "zh": "侧向流层析试纸条",
+      "abbr": "LFA",
+      "category": "即时检验/POCT",
+      "otherLangs": {}
+    },
+    "lateral flow strip": {
+      "en": "Lateral Flow Strip",
+      "zh": "侧向流层析试纸条",
+      "abbr": "LFA",
+      "category": "即时检验/POCT",
+      "otherLangs": {}
+    },
+    "lfa": {
+      "en": "Lateral Flow Assay",
+      "zh": "侧向流层析试纸条",
+      "abbr": "LFA",
+      "category": "即时检验/POCT",
+      "otherLangs": {}
+    },
+    "melting temperature": {
+      "en": "Melting Temperature",
+      "zh": "熔解温度",
+      "abbr": "Tm",
+      "category": "生物物理/热力学",
+      "otherLangs": {}
+    },
+    "5'-end": {
+      "en": "5'-End",
+      "zh": "5'端",
+      "abbr": "",
+      "category": "核酸化学",
+      "otherLangs": {}
+    },
+    "3'-end": {
+      "en": "3'-End",
+      "zh": "3'端",
+      "abbr": "",
+      "category": "核酸化学",
+      "otherLangs": {}
+    },
+    "5'-phosphorylated": {
+      "en": "5'-Phosphorylated",
+      "zh": "5'端磷酸化",
+      "abbr": "",
+      "category": "核酸化学",
+      "otherLangs": {}
+    },
+    "5'-po4": {
+      "en": "5'-PO4",
+      "zh": "5'端磷酸基团",
+      "abbr": "",
+      "category": "核酸化学",
+      "otherLangs": {}
+    },
+    "3'-oh": {
+      "en": "3'-OH",
+      "zh": "3'端羟基",
+      "abbr": "",
+      "category": "核酸化学",
+      "otherLangs": {}
+    },
+    "5'-termini": {
+      "en": "5'-Termini",
+      "zh": "5'末端",
+      "abbr": "",
+      "category": "核酸化学",
+      "otherLangs": {}
+    },
+    "3'-termini": {
+      "en": "3'-Termini",
+      "zh": "3'末端",
+      "abbr": "",
+      "category": "核酸化学",
+      "otherLangs": {}
+    },
+    "5'-overhang": {
+      "en": "5'-Overhang",
+      "zh": "5'突出端",
+      "abbr": "",
+      "category": "核酸化学",
+      "otherLangs": {}
+    },
+    "3'-overhang": {
+      "en": "3'-Overhang",
+      "zh": "3'突出端",
+      "abbr": "",
+      "category": "核酸化学",
+      "otherLangs": {}
     }
   }
 }

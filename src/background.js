@@ -558,8 +558,121 @@ function getTargetLangFullName(targetLang, isAcademic = false) {
   return GLOBAL_LANG_NAME_MAP[targetLang] || targetLang;
 }
 
+function formatMatchedTermRule(t, isSelection = false) {
+  const cat = t.category ? ` [${t.category}]` : '';
+  const abbrPart = t.abbr && !t.term.toLowerCase().includes(t.abbr.toLowerCase()) ? `, ${t.abbr}` : (t.abbr || '');
+  if (t.translation.toLowerCase() === t.term.toLowerCase()) {
+    return `- "${t.term}"${cat} => "${t.translation}"`;
+  }
+  if (t.translation.includes('(') || t.translation.includes('（')) {
+    return `- "${t.term}"${cat} => "${t.translation}"`;
+  }
+  if (isSelection) {
+    const originalNotation = `${t.term}${abbrPart ? ', ' + abbrPart : ''}`;
+    return `- "${t.term}"${cat} => "${t.translation} (${originalNotation})"`;
+  }
+  return `- "${t.term}"${cat} => "${t.translation}"`;
+}
+
+// 多学科/多角色学术论文特殊符号与标点拓扑自愈引擎 (按角色专有生效: biochem/economics/general)
+function healAcademicSymbols(text, persona = 'biochem') {
+  if (!text || typeof text !== 'string') return '';
+  const targetPersona = persona || 'biochem';
+  let s = text;
+
+  // 通用基础排版与连字符断字通用修复
+  s = s.replace(/\bwell-\s+characterized\b/gi, 'well-characterized');
+  s = s.replace(/\bring-\s+shaped\b/gi, 'ring-shaped');
+  s = s.replace(/\binterac-\s*tions\b/gi, 'interactions');
+  s = s.replace(/\bposi-\s*tioned\b/gi, 'positioned');
+  s = s.replace(/\bmis-\s*matches\b/gi, 'mismatches');
+
+  // 1. 生化学术专家专有符号修复 (Biochem Persona Only)
+  if (targetPersona === 'biochem') {
+    // 希腊字母 λ (Lambda) 自愈 (解决加粗标题 k-Exonuclease 与正文 l-exo/l-DNA 缺陷)
+    s = s.replace(/(\b\d+(?:\.\d+)*\.?\s*)[lk]\s*[-–—]\s*Exonuclease\b/g, '$1λ-Exonuclease');
+    s = s.replace(/\b[lk]\s*[-–—]\s*Exonuclease\b/g, 'λ-Exonuclease');
+    s = s.replace(/\b[lk]\s*[-–—]\s*exonuclease\b/g, 'λ-exonuclease');
+    s = s.replace(/\b[lk]\s*[-–—]\s*exo\b/gi, 'λ-exo');
+    s = s.replace(/\b[lk]\s*[-–—]\s*DNA\b/gi, 'λ-DNA');
+    s = s.replace(/\b[lk]\s*[-–—]\s*phage\b/gi, 'λ-phage');
+    s = s.replace(/(?:bacteriophage|phage)\s+[lk]\b/gi, 'phage λ');
+
+    // 核酸五碳糖末端 5' 和 3' (Prime 撇号) 语义自愈
+    // A. 链方向性联动 (5 0 - 3 0 / 50 - 30 -> 5' → 3')
+    s = s.replace(/\b(?:5\s*0|50)\s*(?:[-–—]|to|->|→)\s*(?:3\s*0|30)\b/gi, "5' → 3'");
+    s = s.replace(/\b(?:3\s*0|30)\s*(?:[-–—]|to|->|→)\s*(?:5\s*0|50)\b/gi, "3' → 5'");
+    s = s.replace(/\b5['′]\s*(?:[-–—]|to)\s*3['′]\b/g, "5' → 3'");
+    s = s.replace(/\b3['′]\s*(?:[-–—]|to)\s*5['′]\b/g, "3' → 5'");
+
+    // B. 磷酸化基团与常规化学修饰 (5 0 -PO 4 -> 5'-PO4, 3 0 -OH -> 3'-OH)
+    s = s.replace(/\b(?:5\s*0|50)\s*[-–—]\s*PO\s*4\b/gi, "5'-PO4");
+    s = s.replace(/\b(?:3\s*0|30)\s*[-–—]\s*OH\b/gi, "3'-OH");
+    s = s.replace(/\(\s*(?:5\s*0|50)\s*[-–—]\s*PO\s*4\s*\)/gi, "(5'-PO4)");
+    s = s.replace(/5'-PO\s+4\b/g, "5'-PO4");
+    s = s.replace(/\(5'-PO4\s+\)/g, "(5'-PO4)");
+
+    // B1. 极罕见非标准修饰标记：化学修饰星号 * 硫代骨架 (Phosphorothioate backbone 5'-*PO4 / 5'-*端)
+    s = s.replace(/\b(?:5\s*0|50)\s*[-–—]?\s*\*\s*PO\s*4\b/gi, "5'-*PO4");
+    s = s.replace(/5['′]\s*[-–—]?\s*\*\s*PO\s*4\b/gi, "5'-*PO4");
+    s = s.replace(/\b(?:5\s*0|50)\s*[-–—]?\s*\*\s*[-–—]?\s*([a-zA-Z0-9]+)\b/gi, "5'-*$1");
+    s = s.replace(/\b(?:3\s*0|30)\s*[-–—]?\s*\*\s*[-–—]?\s*([a-zA-Z0-9]+)\b/gi, "3'-*$1");
+    s = s.replace(/5['′]\s*[-–—]?\s*\*\s*([a-zA-Z0-9]+)\b/gi, "5'-*$1");
+    s = s.replace(/3['′]\s*[-–—]?\s*\*\s*([a-zA-Z0-9]+)\b/gi, "3'-*$1");
+
+    // B2. 极罕见学术同位素标记标号 (如 32P-labeled 5'-end / [32P] / γ-32P-ATP)
+    s = s.replace(/(?:\[\s*|\b)(?:γ|gamma)\s*[-–—]?\s*(?:32\s*P|33\s*P)\s*\]?\s*[-–—]?\s*ATP\b/gi, 'γ-32P-ATP');
+    s = s.replace(/(?:\[\s*|\b)(32|33)\s*P\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1P-labeled');
+    s = s.replace(/(?:\[\s*|\b)(35)\s*S\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1S-labeled');
+    s = s.replace(/(?:\[\s*|\b)(14)\s*C\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1C-labeled');
+    s = s.replace(/(?:\[\s*|\b)(3)\s*H\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1H-labeled');
+    s = s.replace(/(?:\[\s*|\b)(125)\s*I\s*\]?\s*[-–—]?\s*labeled\b/gi, '$1I-labeled');
+    s = s.replace(/(\b(?:32|33)P|\b(?:35)S)-labeled\s+(?:5\s*0|50)\s*[-–—]?\s*(end|termini|terminus|overhang|PO\s*4)\b/gi, "$1-labeled 5'-$2");
+    s = s.replace(/(\b(?:32|33)P|\b(?:35)S)\s*[-–—]?\s*(?:5\s*0|50)\s*[-–—]?\s*(end|termini|terminus|overhang|PO\s*4)\b/gi, "$1-5'-$2");
+
+    // C. 结构末端与酶切特征修饰 (结合上下文白名单精准防误伤，扩充生物标记物与化学修饰)
+    const primeContexts = '(?:phosphorylated|phosphate|hydroxyl|end|termini|terminal|terminus|overhang|protruding|carbon|splice|UTR|exonuclease|recessed|flap|stem|arm|tail|strand|dye|fluorophore|quencher|probe|primer|labeled|biotin|thiol|amine|digoxigenin|DIG|Cy3|Cy5|FAM|FITC|HEX|TET|Texas\\s*Red|Alexa\\s*\\d+|ps|phosphorothioate)';
+    const re5Prime = new RegExp('\\b(?:5\\s*0|50)\\s*[-–—]\\s*(' + primeContexts + ')\\b', 'gi');
+    s = s.replace(re5Prime, "5'-$1");
+    const re3Prime = new RegExp('\\b(?:3\\s*0|30)\\s*[-–—]\\s*(' + primeContexts + ')\\b', 'gi');
+    s = s.replace(re3Prime, "3'-$1");
+
+    // D. 介词短语修饰 (at/to/near the 50-end -> 5'-end)
+    s = s.replace(/\b(the|its|at|from|to|near|close to the|adjacent to the)\s+(?:5\s*0|50)\s*[-–—]?\s*(end|termini|terminus|overhang|side)\b/gi, "$1 5'-$2");
+    s = s.replace(/\b(the|its|at|from|to|near|close to the|adjacent to the)\s+(?:3\s*0|30)\s*[-–—]?\s*(end|termini|terminus|overhang|side)\b/gi, "$1 3'-$2");
+    s = s.replace(/\b(?:5\s*0|50)\s*[-–—]\s*(end|termini|terminus|overhang)\b/gi, "5'-$1");
+    s = s.replace(/\b(?:3\s*0|30)\s*[-–—]\s*(end|termini|terminus|overhang)\b/gi, "3'-$1");
+
+    // 热力学与物理化学自由能差/物理量 (ΔG, ΔΔG, ΔTm, ΔH, ΔS)
+    s = s.replace(/\bDD\s*G\s*(?:1|°|o)?\b/g, 'ΔΔG°');
+    s = s.replace(/\bD\s*G\s*(?:1|°|o)?\b/g, 'ΔG°');
+    s = s.replace(/\bD\s*T\s*(?:m)?\b/g, 'ΔTm');
+    s = s.replace(/\bD\s*H\s*(?:1|°|o)?\b/g, 'ΔH°');
+    s = s.replace(/\bD\s*S\s*(?:1|°|o)?\b/g, 'ΔS°');
+
+    // 译文中文后处理自愈保护 (纠正模型可能混淆的字符)
+    s = s.replace(/(?<=[^\w]|^)[lk]\s*[-–—]\s*(?:外切核酸酶|外切酶)/gi, 'λ-外切核酸酶');
+    s = s.replace(/(?:32\s*P|33\s*P)\s*[-–—]?\s*(?:标记|标号)\s*(?:的\s*)?(?:5\s*0|50)\s*端?/gi, "32P-标记 5'端");
+    s = s.replace(/(?:5\s*0|50)\s*[-–—]?\s*\*\s*PO4/gi, "5'-*PO4");
+    s = s.replace(/(?:5\s*0|50)\s*[-–—]?\s*\*\s*端/gi, "5'-*端");
+    s = s.replace(/(?:3\s*0|30)\s*[-–—]?\s*\*\s*端/gi, "3'-*端");
+    s = s.replace(/50\s*端/g, "5'端");
+    s = s.replace(/30\s*端/g, "3'端");
+    s = s.replace(/50\s*[-–—]\s*PO4/g, "5'-PO4");
+    s = s.replace(/50\s*(?:到|至|[-–—]|→)\s*30\s*端?/g, "5'到 3'端");
+  } else if (targetPersona === 'economics') {
+    s = s.replace(/\bD\s*GDP\b/g, 'ΔGDP');
+    s = s.replace(/\bD\s*CPI\b/g, 'ΔCPI');
+    s = s.replace(/\bbeta\s*([0-9]|_i|_t)\b/gi, 'β$1');
+    s = s.replace(/\bepsilon\s*([0-9]|_i|_t)\b/gi, 'ε$1');
+    s = s.replace(/\bR\s*\^?\s*2\b/g, 'R²');
+  }
+
+  return s;
+}
+
 // Google Gemini 官方接口翻译 (终身免费额度，支持上下文语境与学科角色术语对齐)
-async function translateGemini(text, targetLang, apiKey, modelName, context = null, persona = 'biochem', customPersonaPrompts = {}) {
+async function translateGemini(text, targetLang, apiKey, modelName, context = null, persona = 'biochem', customPersonaPrompts = {}, enableBilingual = true) {
   if (!apiKey) throw new Error('未配置 Gemini API Key，请在设置中配置');
   const cleanModel = (modelName || 'gemini-2.0-flash').replace(/^models\//, '');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${apiKey}`;
@@ -588,9 +701,11 @@ async function translateGemini(text, targetLang, apiKey, modelName, context = nu
 4. 输出简洁无干扰：直接输出最贴合该专业语境的最终译名，不要包含任何前导解释、拼音、注脚或标点说明。`;
 
     if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-      prompt += `\n\n【权威学科审定专有名词定名标准】:`;
+      prompt += enableBilingual
+        ? `\n\n【权威学科审定专有名词定名标准 (划词双语对照)】:`
+        : `\n\n【权威学科审定专有名词定名标准 (纯中文规范定名)】:`;
       matchedTerms.forEach(t => {
-        prompt += `\n- "${t.term}" => "${t.translation}"`;
+        prompt += '\n' + formatMatchedTermRule(t, enableBilingual);
       });
     } else if (!isChineseLang(targetLang) && !isEnglishLang(targetLang)) {
       prompt += `\n\n【本土化学术规范强制约束】:
@@ -617,12 +732,17 @@ async function translateGemini(text, targetLang, apiKey, modelName, context = nu
     }
 
     if (isChineseLang(targetLang)) {
+      const termRule = enableBilingual
+        ? `2. 核心学科专业词汇双语对照标注（划词翻译专属）：对于关键学术专有名词、核心术语及专业缩写，译文输出为【中文定名 (英文原文/缩写)】的双语标注形态（例如：'野生型 (wild-type, WT)'、'单核苷酸变异 (single nucleotide variant, SNV)'），在中文定名旁边紧随半角圆括号备注其英文原文或缩写，确保查词与溯源精准。`
+        : `2. 规范精炼学术定名：对于学术专有名词、核心术语及专业缩写，直接翻译为规范精炼的${langName}学术定名，严禁在译文后附加任何英文原文或括号备注（保持纯净中文翻译）。`;
+
       prompt = `${personaPrefix}请将以下文本翻译为${langName}。如果输入内容已经是${langName}，则将其翻译为另一种语言（如中英互译）。
 请严格遵循以下规则：
 1. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围（如 15, 2024, 0.05, 95%）必须 100% 保持原始阿拉伯数字形态与格式，严禁写成汉字数字。
-2. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词、机构名称、学术专有名词、专属缩写，仅在首次出现时在中文定名后以半角括号附带原文或缩写（如“世界自然基金会 (World Wildlife Fund)”）；后续再次出现时直接采用中文定名，严禁重复附加英文括号，坚决防止排版溢出。
-3. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，必须严格保持相同行数与换行符位置，严禁跨行合并；若是普通连贯正文段落，保持自然流畅，切勿切碎。
-4. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L, rpm, °C 等 SI 国际单位必须保留英文符号，严禁汉化；形如 __NUM_0__ 的占位符严禁篡改或丢失。`;
+${termRule}
+3. 特殊符号与希腊字母无损保留：λ、5'、3'、ΔG°、ΔΔG°、ΔTm、→ 等科学与生物物理特殊符号，在中文译文中必须原样保留并完整清晰显示，绝对严禁擅自篡改、省略或退化。
+4. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，必须严格保持相同行数与换行符位置，严禁跨行合并；若是普通连贯正文段落，保持自然流畅，切勿切碎。
+5. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L, rpm, °C 等 SI 国际单位必须保留英文符号，严禁汉化；形如 __NUM_0__ 的占位符严禁篡改或丢失。`;
     } else {
       prompt = `${personaPrefix}请将以下文本翻译为指定目标语言【${langName}】。
 严格执行【${langName} 本土化学术规范】：
@@ -635,9 +755,11 @@ async function translateGemini(text, targetLang, apiKey, modelName, context = nu
     }
 
     if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-      prompt += `\n\n【核心学科专有名词强制对齐表】:`;
+      prompt += enableBilingual
+        ? `\n\n【核心学科专有名词强制对齐表 (划词双语对照)】:`
+        : `\n\n【核心学科专有名词强制对齐表 (纯中文规范定名)】:`;
       matchedTerms.forEach(t => {
-        prompt += `\n- "${t.term}" => "${t.translation}"`;
+        prompt += '\n' + formatMatchedTermRule(t, enableBilingual);
       });
     }
     if (context && context.trim()) {
@@ -664,13 +786,13 @@ ${maskedText}`;
   const data = await res.json();
   if (data.candidates && data.candidates[0]?.content?.parts[0]) {
     const rawOut = data.candidates[0].content.parts[0].text.trim();
-    return unmaskNumericEntities(rawOut, tokenMap);
+    return healAcademicSymbols(unmaskNumericEntities(rawOut, tokenMap), activePersona);
   }
   throw new Error('Gemini 没有返回有效翻译内容');
 }
 
 // OpenAI 兼容 API 翻译 (适用于 智谱 GLM, DeepSeek, OpenRouter, OpenCode, 硅基流动, Groq, 自定义模型等)
-async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, modelName, context = null, persona = 'biochem', customPersonaPrompts = {}) {
+async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, modelName, context = null, persona = 'biochem', customPersonaPrompts = {}, enableBilingual = true) {
   if (!apiKey) throw new Error('该服务未配置 API Key，请在设置中配置');
   if (!endpoint) throw new Error('接口地址未配置');
 
@@ -705,9 +827,11 @@ async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, mod
 4. 输出简洁无干扰：直接输出最贴合该专业语境的最终译名，不要包含任何前导解释、拼音、注脚或标点说明。`;
 
     if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-      sysPrompt += `\n\n【权威学科审定专有名词定名标准】:`;
+      sysPrompt += enableBilingual
+        ? `\n\n【权威学科审定专有名词定名标准 (划词双语对照)】:`
+        : `\n\n【权威学科审定专有名词定名标准 (纯中文规范定名)】:`;
       matchedTerms.forEach(t => {
-        sysPrompt += `\n- "${t.term}" => "${t.translation}"`;
+        sysPrompt += '\n' + formatMatchedTermRule(t, enableBilingual);
       });
     } else if (!isChineseLang(targetLang) && !isEnglishLang(targetLang)) {
       sysPrompt += `\n\n【本土化学术规范强制约束】:
@@ -725,17 +849,26 @@ async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, mod
       systemPrompt = customPersonaPrompts[activePersona] + `\n\n【核心约束】目标语言强制：必须严格且只能翻译为指定目标语言【${langName}】，绝对严禁输出其他无关语种！`;
     } else if (isChineseLang(targetLang)) {
       if (activePersona === 'economics') {
+        const termRule = enableBilingual
+          ? `3. 核心学科专业词汇双语对照标注（划词翻译专属）：专有名词在中文定名后紧跟半角括号备注原文或缩写，方便溯源。`
+          : `3. 规范精炼学术定名：专有名词直接使用规范中文定名，严禁添加任何英文原文或括号备注（保持纯净中文翻译）。`;
+
         systemPrompt = `你是一名国际顶级经济学与金融学期刊 (如 AER, JPE, QJE, JF) 的资深学术评审专家兼金融翻译家。
 请将待翻译的学术文本精准翻译为指定目标语言【${langName}】。
 严格规范：
 0. 目标语言强制：必须严格且只能翻译为【${langName}】，绝对严禁输出其他无关语种。
 1. 术语权威定名：严格遵循经典经济学与金融工程规范审定名词。
 2. 数字严禁汉化：所有阿拉伯数字、百分比、指数、统计量必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-3. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词仅在当前段落首次出现时紧跟半角括号备注原文，后续重复出现时直接采用中文定名，严禁重复附加英文括号。
-4. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，必须严格保持相同行数与换行，严禁跨行合并；若是普通连贯正文段落，保持自然流畅，切勿机械切碎。
-5. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改或丢失。
+${termRule}
+4. 特殊符号与希腊字母无损保留：ΔGDP, ΔCPI, β, ε, R² 等经济与计量符号必须原样保留并完整清晰显示。
+5. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，必须严格保持相同行数与换行，严禁跨行合并；若是普通连贯正文段落，保持自然流畅，切勿机械切碎。
+6. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改或丢失。
 请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`;
       } else if (activePersona === 'biochem') {
+        const termRule = enableBilingual
+          ? `4. 核心学科专业词汇双语对照标注（划词翻译专属）：专有名词、机构名称及学术专属名词，中文定名后紧跟半角括号备注英文原文或缩写（如“野生型 (wild-type, WT)”），确保查词与溯源精准。`
+          : `4. 规范精炼学术定名：专有名词及学术专属名词直接使用规范中文定名，严禁在译文后附加任何英文原文或括号备注（保持纯净中文翻译）。`;
+
         systemPrompt = `你是一名国际顶级期刊 (如 Nature Chemical Biology, JACS, Cell) 的资深学术评审专家兼资深生化与分子生物学文献翻译家。
 请将待翻译的学术文本精准翻译为指定目标语言【${langName}】。
 学术翻译强制要求：
@@ -743,18 +876,24 @@ async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, mod
 1. 术语严格符合《中国化学会命名原则》与全国科学技术名词审定委员会《生物化学名词》标准。
 2. 严禁字面硬翻实验标准方法 (如 Western blot 译为 免疫印迹法；RT-qPCR 译为 逆转录定量PCR；Apoptosis 译为 细胞凋亡)。
 3. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-4. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词、机构名称、国际组织、学术专属名词仅在当前段落首次出现时紧跟半角括号备注原文；后续重复出现时直接采用中文定名，严禁重复附加英文括号，坚决防止排版溢出。
-5. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，译文必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯，切勿生硬切碎。
-6. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L 等 SI 单位绝对保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
+${termRule}
+5. 特殊符号与希腊字母无损保留：λ、5'、3'、ΔG°、ΔΔG°、ΔTm、→ 等科学与生物物理特殊符号，在中文译文中必须原样保留并完整清晰显示，绝对严禁擅自篡改、省略或退化。
+6. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，译文必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯，切勿生硬切碎。
+7. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L 等 SI 单位绝对保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
 请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`;
       } else {
+        const termRule = enableBilingual
+          ? `2. 核心学科专业词汇双语对照标注（划词翻译专属）：专有名词及专有缩写在中文译名后以半角括号附带原文或缩写，方便查阅。`
+          : `2. 规范精炼学术定名：专有名词及专有缩写直接使用规范中文定名，严禁在译文后附加任何英文原文或括号备注（保持纯净中文翻译）。`;
+
         systemPrompt = `你是一个专业的高级学术与通用翻译官。请直接将用户输入的文本精准翻译为指定目标语言【${langName}】。
 严格规则：
 0. 目标语言强制：必须严格且只能翻译为【${langName}】，绝对严禁输出其他无关语种。
 1. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保持原始阿拉伯数字形态，绝对禁止转写为汉字。
-2. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词、学术机构、组织及专属缩写，仅在当前段落首次出现时在中文译名后以半角括号附带原文或缩写；后续再次出现时直接采用中文定名，严禁重复附加英文括号，坚决防止排版溢出。
-3. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，必须严格保持相同行数与换行，严禁跨行合并；若是普通连贯正文段落，保持自然通顺，切勿机械切碎。
-4. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L, rpm, °C 等 SI 单位保留英文字符；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改或丢失。
+${termRule}
+3. 特殊符号与数学字母无损保留：λ、5'、3'、→ 等特殊符号完整保留与清晰显示。
+4. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，必须严格保持相同行数与换行，严禁跨行合并；若是普通连贯正文段落，保持自然通顺，切勿机械切碎。
+5. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L, rpm, °C 等 SI 单位保留英文字符；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改或丢失。
 请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`;
       }
     } else {
@@ -775,11 +914,11 @@ async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, mod
     }
 
     if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-      systemPrompt += `\n\n【本段核心命中学科专有术语强制对齐表 (请严格按照下列定名翻译)】:`;
+      systemPrompt += enableBilingual
+        ? `\n\n【本段核心命中学科专有术语强制对齐表 (划词双语对照)】:`
+        : `\n\n【本段核心命中学科专有术语强制对齐表 (纯中文规范定名)】:`;
       matchedTerms.forEach(t => {
-        const cat = t.category ? ` [${t.category}]` : '';
-        const abbr = t.abbr ? ` (缩写: ${t.abbr})` : '';
-        systemPrompt += `\n- "${t.term}"${abbr}${cat} => "${t.translation}"`;
+        systemPrompt += '\n' + formatMatchedTermRule(t, enableBilingual);
       });
     }
 
@@ -813,14 +952,14 @@ async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, mod
   if (choice) {
     const content = choice.message?.content;
     if (typeof content === 'string' && content.trim()) {
-      return unmaskNumericEntities(content.trim(), tokenMap);
+      return healAcademicSymbols(unmaskNumericEntities(content.trim(), tokenMap), activePersona);
     }
     if (Array.isArray(content)) {
       const merged = content.map(part => (part && part.text) ? part.text : '').join('').trim();
-      if (merged) return unmaskNumericEntities(merged, tokenMap);
+      if (merged) return healAcademicSymbols(unmaskNumericEntities(merged, tokenMap), activePersona);
     }
     if (choice.text && typeof choice.text === 'string' && choice.text.trim()) {
-      return unmaskNumericEntities(choice.text.trim(), tokenMap);
+      return healAcademicSymbols(unmaskNumericEntities(choice.text.trim(), tokenMap), activePersona);
     }
   }
   throw new Error('API 没有返回有效的翻译文本内容');
@@ -866,10 +1005,11 @@ async function translateBatchOpenAICompatible(items, targetLang, apiKey, endpoin
 1. 术语权威定名：严格遵循经典经济学与金融工程规范审定名词（如 Quantitative Easing 译为 量化宽松；Phillips Curve 译为 菲利普斯曲线；Deadweight Loss 译为 无谓损失）。
 2. 计量逻辑严密：准确传达计量因果推断（OLS、IV、DID、RDD）与统计显著性。
 3. 数字严禁汉化：所有阿拉伯数字、百分比、指数、统计量必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-4. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词仅在当前页首次出现时紧跟半角括号备注原文，后续重复出现时直接采用中文定名，严禁重复附加英文括号。
-5. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题或条目清单必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯。
-6. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置。
-7. 必须输出合法的纯 JSON 数组，保持 id 严格一致，严禁任何 markdown 标记或解释。`;
+4. 原排版空间防溢出契约（必须严格遵守）：当前处于 PDF 原排版原位覆盖场景，专有名词必须以规范中文定名为主，严禁在正文中机械附加冗长的英文全称括号（坚决防止因译文长度暴增导致原排版区域重叠、溢出或字号过度压缩）。仅在当前页首次出现且具有通用极短缩写时允许紧随半角括号备注极短缩写（如“野生型 (WT)”）；后续出现一律直接采用中文定名。
+5. 特殊符号与希腊字母无损保留：ΔGDP, ΔCPI, β, ε, R² 等经济与计量符号必须原样保留并完整清晰显示。
+6. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题或条目清单必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯。
+7. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置。
+8. 必须输出合法的纯 JSON 数组，保持 id 严格一致，严禁任何 markdown 标记或解释。`;
     } else if (activePersona === 'biochem') {
       systemPrompt = `你是一名国际顶级期刊 (如 Nature Chemical Biology, JACS, Cell) 的资深学术评审专家兼资深生化与分子生物学文献翻译家。
 请将待翻译的 JSON 数组中的每一个学术段落精准翻译为 ${langName}。
@@ -877,20 +1017,22 @@ async function translateBatchOpenAICompatible(items, targetLang, apiKey, endpoin
 1. 术语严格符合《中国化学会命名原则》与全国科学技术名词审定委员会《生物化学名词》标准。
 2. 严禁字面硬翻实验标准方法 (如 Western blot 译为 免疫印迹法；RT-qPCR 译为 逆转录定量PCR；Apoptosis 译为 细胞凋亡)。
 3. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-4. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词、机构名称、国际组织、学术专属名词仅在当前页首次出现时紧跟半角括号备注原文，如“世界自然基金会 (World Wildlife Fund)”；后续重复出现时直接采用中文定名，严禁重复附加英文括号，坚决防止排版溢出。
-5. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，译文必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯，切勿生硬切碎。
-6. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L 等 SI 单位绝对保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
-7. 保持每一个对象的 "id" 字段与输入严格一致，必须输出合法的纯 JSON 数组，严禁任何 markdown 标记或解释。`;
+4. 原排版空间防溢出契约（必须严格遵守）：当前处于 PDF 原排版原位覆盖场景，专有名词必须以规范中文定名为主，严禁在正文中机械附加冗长的英文全称括号（坚决防止因译文长度暴增导致原排版区域重叠、溢出或字号过度压缩）。仅在当前页首次出现且具有通用极短缩写时允许紧随半角括号备注极短缩写（如“野生型 (WT)”）；后续出现一律直接采用中文定名。
+5. 特殊符号与希腊字母无损保留：λ、5'、3'、ΔG°、ΔΔG°、ΔTm、→ 等科学与生物物理特殊符号，在中文译文中必须原样保留并完整清晰显示，绝对严禁擅自篡改、省略或退化。
+6. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，译文必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯，切勿生硬切碎。
+7. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L 等 SI 单位绝对保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
+8. 保持每一个对象的 "id" 字段与输入严格一致，必须输出合法的纯 JSON 数组，严禁任何 markdown 标记或解释。`;
     } else {
       systemPrompt = `你是一个专业的高级学术与文档翻译专家。请将待翻译的 JSON 数组中的每一个段落翻译为 ${langName}。
 严格遵循以下要求：
 1. 保持每一个对象的 "id" 字段与原始输入严格一致。
 2. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保留阿拉伯数字形态，绝对禁止转写为汉字。
-3. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词、学术机构、组织及专有缩写，仅在当前页首次出现时在中文定名后紧跟半角括号备注原文；后续重复出现时直接采用中文定名，严禁重复附加英文括号。
-4. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题、清单必须严格保持相同行数与换行符位置；普通正文保持自然连贯。
-5. 国际单位与占位符保护：SI 单位保留英文；形如 __NUM_0__ 的占位符严禁篡改或丢失。
-6. 必须输出且仅输出合法的纯 JSON 数组，格式为 [{"id": 0, "text": "译文"}...]。
-7. 严禁包含任何 Markdown 代码块标记（如 \`\`\`json ），严禁附加任何解释。`;
+3. 原排版空间防溢出契约（必须严格遵守）：当前处于 PDF 原排版原位覆盖场景，专有名词必须以规范中文定名为主，严禁在正文中机械附加冗长的英文全称括号（坚决防止因译文长度暴增导致原排版区域重叠、溢出或字号过度压缩）。仅在当前页首次出现且具有通用极短缩写时允许紧随半角括号备注极短缩写；后续出现一律直接采用中文定名。
+4. 特殊符号与数学字母无损保留：λ、5'、3'、→ 等特殊符号完整保留与清晰显示。
+5. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题、清单必须严格保持相同行数与换行符位置；普通正文保持自然连贯。
+6. 国际单位与占位符保护：SI 单位保留英文；形如 __NUM_0__ 的占位符严禁篡改或丢失。
+7. 必须输出且仅输出合法的纯 JSON 数组，格式为 [{"id": 0, "text": "译文"}...]。
+8. 严禁包含任何 Markdown 代码块标记（如 \`\`\`json ），严禁附加任何解释。`;
     }
   } else {
     let personaTitle = '资深国际学术期刊评审专家兼母语级科学翻译家';
@@ -912,11 +1054,9 @@ async function translateBatchOpenAICompatible(items, targetLang, apiKey, endpoin
 
   // 动态注入命中的学科专有名词强制对齐表 (仅在目标语言为中文时生效)
   if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-    systemPrompt += `\n\n【本段核心命中学科专有术语强制对齐表 (请严格按照下列定名翻译)】:`;
+    systemPrompt += `\n\n【本段核心命中学科专有术语强制对齐表 (原排版规范中文定名，严禁添加冗长括号英文以防版面溢出)】:`;
     matchedTerms.forEach(t => {
-      const cat = t.category ? ` [${t.category}]` : '';
-      const abbr = t.abbr ? ` (缩写: ${t.abbr})` : '';
-      systemPrompt += `\n- "${t.term}"${abbr}${cat} => "${t.translation}"`;
+      systemPrompt += '\n' + formatMatchedTermRule(t, false);
     });
   }
 
@@ -968,9 +1108,10 @@ ${context.suffix ? `【后置页面开头上下文 (仅作为理解下文句意�
     if (Array.isArray(parsed)) {
       return parsed.map(p => {
         const tMap = tokenMaps.get(p.id);
+        const unmasked = tMap ? unmaskNumericEntities(p.text, tMap) : p.text;
         return {
           id: p.id,
-          text: tMap ? unmaskNumericEntities(p.text, tMap) : p.text
+          text: healAcademicSymbols(unmasked, activePersona)
         };
       });
     }
@@ -988,9 +1129,10 @@ ${context.suffix ? `【后置页面开头上下文 (仅作为理解下文句意�
     if (matched.length > 0) {
       return matched.map(p => {
         const tMap = tokenMaps.get(p.id);
+        const unmasked = tMap ? unmaskNumericEntities(p.text, tMap) : p.text;
         return {
           id: p.id,
-          text: tMap ? unmaskNumericEntities(p.text, tMap) : p.text
+          text: healAcademicSymbols(unmasked, activePersona)
         };
       });
     }
@@ -1030,10 +1172,11 @@ async function translateBatchGemini(items, targetLang, apiKey, modelName, contex
 1. 术语权威定名：严格遵循经典经济学与金融工程规范审定名词（如 Quantitative Easing 译为 量化宽松；Phillips Curve 译为 菲利普斯曲线；Deadweight Loss 译为 无谓损失）。
 2. 计量逻辑严密：准确传达计量因果推断（OLS、IV、DID、RDD）与统计显著性。
 3. 数字严禁汉化：所有阿拉伯数字、百分比、指数、统计量必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-4. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词仅在当前页首次出现时紧跟半角括号备注原文，后续重复出现时直接采用中文定名，严禁重复附加英文括号。
-5. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题或条目清单必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯。
-6. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置。
-7. 必须输出合法的纯 JSON 数组，保持 id 严格一致，严禁任何 markdown 标记或解释。`;
+4. 原排版空间防溢出契约（必须严格遵守）：当前处于 PDF 原排版原位覆盖场景，专有名词必须以规范中文定名为主，严禁在正文中机械附加冗长的英文全称括号（坚决防止因译文长度暴增导致原排版区域重叠、溢出或字号过度压缩）。仅在当前页首次出现且具有通用极短缩写时允许紧随半角括号备注极短缩写（如“野生型 (WT)”）；后续出现一律直接采用中文定名。
+5. 特殊符号与希腊字母无损保留：ΔGDP, ΔCPI, β, ε, R² 等经济与计量符号必须原样保留并完整清晰显示。
+6. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题或条目清单必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯。
+7. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置。
+8. 必须输出合法的纯 JSON 数组，保持 id 严格一致，严禁任何 markdown 标记或解释。`;
     } else if (activePersona === 'biochem') {
       prompt = `你是一名国际顶级期刊 (如 Nature Chemical Biology, JACS, Cell) 的资深学术评审专家兼资深生化与分子生物学文献翻译家。
 请将待翻译的 JSON 数组中的每一个学术段落精准翻译为 ${langName}。
@@ -1041,20 +1184,22 @@ async function translateBatchGemini(items, targetLang, apiKey, modelName, contex
 1. 术语严格符合《中国化学会命名原则》与全国科学技术名词审定委员会《生物化学名词》标准。
 2. 严禁字面硬翻实验标准方法 (如 Western blot 译为 免疫印迹法；RT-qPCR 译为 逆转录定量PCR；Apoptosis 译为 细胞凋亡)。
 3. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-4. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词、机构名称、国际组织、学术专属名词仅在当前页首次出现时紧跟半角括号备注原文，如“世界自然基金会 (World Wildlife Fund)”；后续重复出现时直接采用中文定名，严禁重复附加英文括号，坚决防止排版溢出。
-5. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，译文必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯，切勿生硬切碎。
-6. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L 等 SI 单位绝对保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
-7. 保持每一个对象的 "id" 字段与输入严格一致，必须输出合法的纯 JSON 数组，严禁任何 markdown 标记或解释。`;
+4. 原排版空间防溢出契约（必须严格遵守）：当前处于 PDF 原排版原位覆盖场景，专有名词必须以规范中文定名为主，严禁在正文中机械附加冗长的英文全称括号（坚决防止因译文长度暴增导致原排版区域重叠、溢出或字号过度压缩）。仅在当前页首次出现且具有通用极短缩写时允许紧随半角括号备注极短缩写（如“野生型 (WT)”）；后续出现一律直接采用中文定名。
+5. 特殊符号与希腊字母无损保留：λ、5'、3'、ΔG°、ΔΔG°、ΔTm、→ 等科学与生物物理特殊符号，在中文译文中必须原样保留并完整清晰显示，绝对严禁擅自篡改、省略或退化。
+6. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，译文必须严格保持相同行数与换行；普通正文段落保持语义通顺连贯，切勿生硬切碎。
+7. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L 等 SI 单位绝对保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
+8. 保持每一个对象的 "id" 字段与输入严格一致，必须输出合法的纯 JSON 数组，严禁任何 markdown 标记或解释。`;
     } else {
       prompt = `你是一个专业的高级学术与文档翻译专家。请将待翻译的 JSON 数组中的每一个段落翻译为 ${langName}。
 严格遵循以下要求：
 1. 保持每一个对象的 "id" 字段与原始输入严格一致。
 2. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保留阿拉伯数字形态，绝对禁止转写为汉字。
-3. 专用词汇首次出现标注原则 (First-Occurrence Rule)：专有名词、学术机构、组织及专有缩写，仅在当前页首次出现时在中文定名后紧跟半角括号备注原文；后续重复出现时直接采用中文定名，严禁重复附加英文括号。
-4. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题、清单必须严格保持相同行数与换行符位置；普通正文保持自然连贯。
-5. 国际单位与占位符保护：SI 单位保留英文；形如 __NUM_0__ 的占位符严禁篡改或丢失。
-6. 必须输出且仅输出合法的纯 JSON 数组，格式为 [{"id": 0, "text": "译文"}...]。
-7. 严禁包含任何 Markdown 标记（如 \`\`\`json ），严禁附加任何解释。`;
+3. 原排版空间防溢出契约（必须严格遵守）：当前处于 PDF 原排版原位覆盖场景，专有名词必须以规范中文定名为主，严禁在正文中机械附加冗长的英文全称括号（坚决防止因译文长度暴增导致原排版区域重叠、溢出或字号过度压缩）。仅在当前页首次出现且具有通用极短缩写时允许紧随半角括号备注极短缩写；后续出现一律直接采用中文定名。
+4. 特殊符号与数学字母无损保留：λ、5'、3'、→ 等特殊符号完整保留与清晰显示。
+5. 多行标题与自然段落智能区分：包含换行符 \\n 的独立多行标题、清单必须严格保持相同行数与换行符位置；普通正文保持自然连贯。
+6. 国际单位与占位符保护：SI 单位保留英文；形如 __NUM_0__ 的占位符严禁篡改或丢失。
+7. 必须输出且仅输出合法的纯 JSON 数组，格式为 [{"id": 0, "text": "译文"}...]。
+8. 严禁包含任何 Markdown 标记（如 \`\`\`json ），严禁附加任何解释。`;
     }
   } else {
     let personaTitle = '资深国际学术期刊评审专家兼母语级科学翻译家';
@@ -1076,11 +1221,9 @@ async function translateBatchGemini(items, targetLang, apiKey, modelName, contex
 
   // 动态注入命中的学科专有名词强制对齐表 (仅在目标语言为中文时生效)
   if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-    prompt += `\n\n【本段核心命中学科专有术语强制对齐表 (请严格按照下列定名翻译)】:`;
+    prompt += `\n\n【本段核心命中学科专有术语强制对齐表 (原排版规范中文定名，严禁添加冗长括号英文以防版面溢出)】:`;
     matchedTerms.forEach(t => {
-      const cat = t.category ? ` [${t.category}]` : '';
-      const abbr = t.abbr ? ` (缩写: ${t.abbr})` : '';
-      prompt += `\n- "${t.term}"${abbr}${cat} => "${t.translation}"`;
+      prompt += '\n' + formatMatchedTermRule(t, false);
     });
   }
 
@@ -1117,9 +1260,10 @@ ${JSON.stringify(maskedItems.map(i => ({ id: i.id, text: i.text })))}`;
     if (Array.isArray(parsed)) {
       return parsed.map(p => {
         const tMap = tokenMaps.get(p.id);
+        const unmasked = tMap ? unmaskNumericEntities(p.text, tMap) : p.text;
         return {
           id: p.id,
-          text: tMap ? unmaskNumericEntities(p.text, tMap) : p.text
+          text: healAcademicSymbols(unmasked, activePersona)
         };
       });
     }
@@ -1137,9 +1281,10 @@ ${JSON.stringify(maskedItems.map(i => ({ id: i.id, text: i.text })))}`;
     if (matched.length > 0) {
       return matched.map(p => {
         const tMap = tokenMaps.get(p.id);
+        const unmasked = tMap ? unmaskNumericEntities(p.text, tMap) : p.text;
         return {
           id: p.id,
-          text: tMap ? unmaskNumericEntities(p.text, tMap) : p.text
+          text: healAcademicSymbols(unmasked, activePersona)
         };
       });
     }
@@ -1578,15 +1723,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'translate') {
-    const { text, engine, targetLang, model, context, persona } = request;
+    const { text, engine, targetLang, model, context, persona, enableBilingualNotation } = request;
     const activePersona = persona || 'biochem';
+    const isBilingual = enableBilingualNotation !== false;
 
-    // 如果选中的是单一学术术语且在专业词库中有确定对应定名，优先直接采用权威审定名
+    // 如果选中的是单一学术术语且在专业词库中有确定对应定名，优先直接采用权威审定名 (根据开关决定是否输出双语对照形态)
     if (targetLang === 'zh-CN' && text && text.trim().length <= 50 && !text.includes('\n')) {
       const cleanKey = text.trim();
       const directMatches = matchTerms(cleanKey, 1, activePersona);
       if (directMatches.length > 0 && directMatches[0].term.toLowerCase() === cleanKey.toLowerCase()) {
-        sendResponse({ success: true, translation: directMatches[0].translation });
+        const match = directMatches[0];
+        let displayTrans;
+        if (!isBilingual) {
+          // 用户关闭了双语备注：仅输出权威中文审定名，不带英文括号
+          displayTrans = match.translation.replace(/\s*\([a-zA-Z0-9\s,\-_/]+\)/g, '').trim();
+        } else {
+          const abbrPart = match.abbr && !match.term.toLowerCase().includes(match.abbr.toLowerCase()) ? `, ${match.abbr}` : (match.abbr || '');
+          displayTrans = (match.translation.includes('(') || match.translation.includes('（'))
+            ? match.translation
+            : `${match.translation} (${match.term}${abbrPart ? ', ' + abbrPart : ''})`;
+        }
+        sendResponse({ success: true, translation: healAcademicSymbols(displayTrans, activePersona) });
         return true;
       }
     }
@@ -1615,18 +1772,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       } else if (engine === 'deepl') {
         translationPromise = translateDeepL(text, targetLang, settings.deeplApiKey, settings.deeplEndpoint);
       } else if (engine === 'glm') {
-        translationPromise = translateOpenAICompatible(text, targetLang, settings.glmApiKey, 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model || settings.glmActiveModel || 'glm-4-flash', context, activePersona, settings.customPersonaPrompts);
+        translationPromise = translateOpenAICompatible(text, targetLang, settings.glmApiKey, 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model || settings.glmActiveModel || 'glm-4-flash', context, activePersona, settings.customPersonaPrompts, isBilingual);
       } else if (engine === 'gemini') {
-        translationPromise = translateGemini(text, targetLang, settings.geminiApiKey, model || settings.geminiActiveModel || 'gemini-2.0-flash', context, activePersona, settings.customPersonaPrompts);
+        translationPromise = translateGemini(text, targetLang, settings.geminiApiKey, model || settings.geminiActiveModel || 'gemini-2.0-flash', context, activePersona, settings.customPersonaPrompts, isBilingual);
       } else if (engine === 'deepseek') {
-        translationPromise = translateOpenAICompatible(text, targetLang, settings.deepseekApiKey, 'https://api.deepseek.com/chat/completions', model || settings.deepseekActiveModel || 'deepseek-chat', context, activePersona, settings.customPersonaPrompts);
+        translationPromise = translateOpenAICompatible(text, targetLang, settings.deepseekApiKey, 'https://api.deepseek.com/chat/completions', model || settings.deepseekActiveModel || 'deepseek-chat', context, activePersona, settings.customPersonaPrompts, isBilingual);
       } else if (engine === 'youdao') {
         translationPromise = translateYoudao(text, targetLang, settings.youdaoAppKey, settings.youdaoAppSecret);
       } else if (engine && engine.startsWith('custom_')) {
         const customId = engine.substring(7); // "custom_" 长度为 7
         const customModel = settings.customModels.find(m => m.id === customId);
         if (customModel) {
-          translationPromise = translateOpenAICompatible(text, targetLang, customModel.apiKey, customModel.endpoint, customModel.modelName, context, activePersona, settings.customPersonaPrompts);
+          translationPromise = translateOpenAICompatible(text, targetLang, customModel.apiKey, customModel.endpoint, customModel.modelName, context, activePersona, settings.customPersonaPrompts, isBilingual);
         } else {
           translationPromise = Promise.reject(new Error('未找到该自定义模型的配置信息'));
         }
@@ -1636,7 +1793,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       Promise.resolve(translationPromise)
         .then(translation => {
-          sendResponse({ success: true, translation });
+          sendResponse({ success: true, translation: healAcademicSymbols(translation, activePersona) });
         })
         .catch(err => {
           sendResponse({ success: false, error: err.message });
@@ -1694,7 +1851,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       Promise.resolve(batchPromise)
         .then(translations => {
-          sendResponse({ success: true, translations });
+          const healed = Array.isArray(translations)
+            ? translations.map(t => ({ id: t.id, text: healAcademicSymbols(t.text, effectivePersona) }))
+            : translations;
+          sendResponse({ success: true, translations: healed });
         })
         .catch(err => {
           sendResponse({ success: false, error: err.message });
@@ -1772,8 +1932,9 @@ chrome.runtime.onConnect.addListener((port) => {
     });
 
     port.onMessage.addListener((request) => {
-      const { text, engine, targetLang, model, context, persona } = request;
+      const { text, engine, targetLang, model, context, persona, enableBilingualNotation } = request;
       const activePersona = persona || 'biochem';
+      const isBilingual = enableBilingualNotation !== false;
 
       port.postMessage({ type: 'start' });
 
@@ -1824,18 +1985,25 @@ chrome.runtime.onConnect.addListener((port) => {
             const fullScanText = (text || '') + (context ? ' ' + context : '');
             const matchedTerms = matchTerms(fullScanText, 10, activePersona);
 
+            const termRule = isBilingual
+              ? `2. 核心学科专业词汇双语对照标注（划词翻译专属）：对于关键学术专有名词、核心术语及专业缩写，译文输出为【中文定名 (英文原文/缩写)】的双语标注形态（例如：'野生型 (wild-type, WT)'、'单核苷酸变异 (single nucleotide variant, SNV)'），在中文定名旁边紧随半角圆括号备注其英文原文或缩写，确保查词与溯源精准。`
+              : `2. 规范精炼学术定名：对于学术专有名词、核心术语及专业缩写，直接翻译为规范精炼的${langName}学术定名，严禁在译文后附加任何英文原文或括号备注（保持纯净中文翻译）。`;
+
             let sysPrompt = `你是一名国际顶级学术期刊的资深学术评审专家兼母语级科学翻译家。请将待翻译文本严格且只能翻译为指定目标语言【${langName}】。
 规则约束：
 0. 目标语言强制：必须 100% 严格使用【${langName}】，绝对严禁输出任何其他语种！
-1. 数字与符号保留：所有阿拉伯数字、小数、百分比、科学计数法必须 100% 保持原始形态。
-2. 专业术语权威对齐：严格遵循该学科最严谨规范的标准定名。
-3. 占位符绝对保护：形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
+1. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法必须 100% 保持原始形态。
+${termRule}
+3. 特殊符号与希腊字母无损保留：λ、5'、3'、ΔG°、ΔΔG°、ΔTm、→ 等科学与生物物理特殊符号，在中文译文中必须原样保留并完整清晰显示，绝对严禁擅自篡改、省略或退化。
+4. 占位符绝对保护：形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改。
 请直接输出翻译结果，不要包含任何前导解释、注脚或标点说明。`;
 
             if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-              sysPrompt += `\n\n【核心学科专有名词强制对齐表】:`;
+              sysPrompt += isBilingual
+                ? `\n\n【核心学科专有名词强制对齐表 (划词双语对照)】:`
+                : `\n\n【核心学科专有名词强制对齐表 (纯中文规范定名)】:`;
               matchedTerms.forEach(t => {
-                sysPrompt += `\n- "${t.term}" => "${t.translation}"`;
+                sysPrompt += '\n' + formatMatchedTermRule(t, isBilingual);
               });
             }
 
@@ -1855,7 +2023,7 @@ chrome.runtime.onConnect.addListener((port) => {
               }
             });
 
-            fullResult = unmaskNumericEntities(rawOutput, tokenMap);
+            fullResult = healAcademicSymbols(unmaskNumericEntities(rawOutput, tokenMap), activePersona);
           } else {
             // 传统免 Key 引擎 (Google / Bing / DeepL / Youdao)
             if (engine === 'google') {
@@ -1871,7 +2039,7 @@ chrome.runtime.onConnect.addListener((port) => {
             }
           }
 
-          port.postMessage({ type: 'done', fullText: fullResult });
+          port.postMessage({ type: 'done', fullText: healAcademicSymbols(fullResult, activePersona) });
         } catch (err) {
           if (err.name !== 'AbortError') {
             port.postMessage({ type: 'error', error: err.message });

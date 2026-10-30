@@ -31,7 +31,7 @@
   style.textContent = `
     :host {
       all: initial;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Times New Roman", "Cambria Math", sans-serif;
     }
 
     .hidden {
@@ -275,6 +275,7 @@
     }
 
     .panel-result {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Times New Roman", "Cambria Math", sans-serif;
       font-size: 14.5px;
       line-height: 1.5;
       font-weight: 400;
@@ -466,6 +467,7 @@
         <div class="panel-toolbar-row">
           <span style="font-size:11.5px; color:#8e8e93; font-weight:500;">译文</span>
           <div class="panel-btn-group">
+            <button id="panel-bilingual-btn" class="panel-icon-btn active" title="专有名词双语备注：开启中（点击切换）" style="font-size:10.5px; font-weight:600; width:auto; min-width:22px; padding:0 4px;">双语</button>
             <button id="panel-speak-res-btn" class="panel-icon-btn" title="朗读译文">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
             </button>
@@ -514,6 +516,7 @@
   const speakResBtn = shadowRoot.getElementById('panel-speak-res-btn');
   const copyResBtn = shadowRoot.getElementById('panel-copy-res-btn');
   const panelStarBtn = shadowRoot.getElementById('panel-star-btn');
+  const panelBilingualBtn = shadowRoot.getElementById('panel-bilingual-btn');
   const dragHandle = shadowRoot.getElementById('panel-drag-handle');
 
   const pdfModal = shadowRoot.getElementById('pdf-modal');
@@ -693,9 +696,14 @@
 
   loadAvailableEngines();
 
-  // 监听 storage 变更，及时更新可用引擎
-  chrome.storage.onChanged.addListener(() => {
+  // 监听 storage 变更，及时更新可用引擎及双语按钮状态
+  chrome.storage.onChanged.addListener((changes) => {
     loadAvailableEngines();
+    if (changes.enableBilingualNotation && panelBilingualBtn) {
+      const isBilingual = changes.enableBilingualNotation.newValue !== false;
+      panelBilingualBtn.classList.toggle('active', isBilingual);
+      panelBilingualBtn.title = isBilingual ? '专有名词双语备注：开启中（点击切换）' : '专有名词双语备注：已关闭（点击切换）';
+    }
   });
 
   // 读取偏好设置 (带异常容错降级)
@@ -707,7 +715,9 @@
           autoShowPanel: false,
           defaultTargetLang: 'zh-CN',
           defaultEngine: 'google',
-          triggerMode: 'direct'
+          triggerMode: 'direct',
+          translationPersona: 'biochem',
+          enableBilingualNotation: true
         }, (res) => {
           if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.lastError) {
             callback({
@@ -715,7 +725,9 @@
               autoShowPanel: false,
               defaultTargetLang: 'zh-CN',
               defaultEngine: 'google',
-              triggerMode: 'direct'
+              triggerMode: 'direct',
+              translationPersona: 'biochem',
+              enableBilingualNotation: true
             });
           } else {
             callback(res || {
@@ -723,7 +735,9 @@
               autoShowPanel: false,
               defaultTargetLang: 'zh-CN',
               defaultEngine: 'google',
-              triggerMode: 'direct'
+              triggerMode: 'direct',
+              translationPersona: 'biochem',
+              enableBilingualNotation: true
             });
           }
         });
@@ -735,7 +749,9 @@
       autoShowPanel: false,
       defaultTargetLang: 'zh-CN',
       defaultEngine: 'google',
-      triggerMode: 'direct'
+      triggerMode: 'direct',
+      translationPersona: 'biochem',
+      enableBilingualNotation: true
     });
   }
 
@@ -853,7 +869,14 @@
         translatePanel.classList.remove('hidden');
         translatePanel.getBoundingClientRect();
         translatePanel.classList.add('show');
-        doTranslation(text, chosenEngine, targetLang, activeModel);
+        getSettings((settings) => {
+          if (panelBilingualBtn) {
+            const isBilingual = settings.enableBilingualNotation !== false;
+            panelBilingualBtn.classList.toggle('active', isBilingual);
+            panelBilingualBtn.title = isBilingual ? '专有名词双语备注：开启中（点击切换）' : '专有名词双语备注：已关闭（点击切换）';
+          }
+          doTranslation(text, chosenEngine, targetLang, activeModel);
+        });
       });
     });
   }
@@ -961,78 +984,86 @@
 
     let streamedText = '';
 
-    try {
-      currentStreamPort = chrome.runtime.connect({ name: 'translate-stream' });
-      currentStreamPort.postMessage({
-        text: text,
-        engine: engine,
-        targetLang: targetLang,
-        model: modelName
-      });
+    getSettings((settings) => {
+      const activePersona = settings.translationPersona || 'biochem';
+      const enableBilingual = settings.enableBilingualNotation !== false;
+      try {
+        currentStreamPort = chrome.runtime.connect({ name: 'translate-stream' });
+        currentStreamPort.postMessage({
+          text: text,
+          engine: engine,
+          targetLang: targetLang,
+          model: modelName,
+          persona: activePersona,
+          enableBilingualNotation: enableBilingual
+        });
 
-      currentStreamPort.onMessage.addListener((msg) => {
-        if (msg.type === 'start') {
-          panelLoader.classList.add('hidden');
-          panelResultText.classList.remove('hidden');
-          panelResultText.textContent = '';
-        } else if (msg.type === 'chunk') {
-          panelLoader.classList.add('hidden');
-          panelResultText.classList.remove('hidden');
-          streamedText += msg.delta;
-          panelResultText.textContent = streamedText;
-        } else if (msg.type === 'done') {
-          panelLoader.classList.add('hidden');
-          panelResultText.classList.remove('hidden');
-          const finalText = msg.fullText || streamedText;
-          panelResultText.textContent = finalText;
-          saveVocabularyRecord(text, finalText, engine, false);
-          if (currentStreamPort) {
-            try { currentStreamPort.disconnect(); } catch (e) {}
-            currentStreamPort = null;
+        currentStreamPort.onMessage.addListener((msg) => {
+          if (msg.type === 'start') {
+            panelLoader.classList.add('hidden');
+            panelResultText.classList.remove('hidden');
+            panelResultText.textContent = '';
+          } else if (msg.type === 'chunk') {
+            panelLoader.classList.add('hidden');
+            panelResultText.classList.remove('hidden');
+            streamedText += msg.delta;
+            panelResultText.textContent = streamedText;
+          } else if (msg.type === 'done') {
+            panelLoader.classList.add('hidden');
+            panelResultText.classList.remove('hidden');
+            const finalText = msg.fullText || streamedText;
+            panelResultText.textContent = finalText;
+            saveVocabularyRecord(text, finalText, engine, false);
+            if (currentStreamPort) {
+              try { currentStreamPort.disconnect(); } catch (e) {}
+              currentStreamPort = null;
+            }
+          } else if (msg.type === 'error') {
+            panelLoader.classList.add('hidden');
+            panelResultText.classList.remove('hidden');
+            panelResultText.textContent = `出错: ${msg.error}`;
+            panelResultText.classList.add('error');
+            if (currentStreamPort) {
+              try { currentStreamPort.disconnect(); } catch (e) {}
+              currentStreamPort = null;
+            }
           }
-        } else if (msg.type === 'error') {
+        });
+
+        currentStreamPort.onDisconnect.addListener(() => {
+          currentStreamPort = null;
+        });
+      } catch (err) {
+        // 兼容环境异常降级回退
+        chrome.runtime.sendMessage({
+          action: 'translate',
+          text: text,
+          engine: engine,
+          targetLang: targetLang,
+          model: modelName,
+          persona: activePersona,
+          enableBilingualNotation: enableBilingual
+        }, (response) => {
           panelLoader.classList.add('hidden');
           panelResultText.classList.remove('hidden');
-          panelResultText.textContent = `出错: ${msg.error}`;
-          panelResultText.classList.add('error');
-          if (currentStreamPort) {
-            try { currentStreamPort.disconnect(); } catch (e) {}
-            currentStreamPort = null;
+
+          if (!response) {
+            panelResultText.textContent = '翻译超时或服务未响应';
+            panelResultText.classList.add('error');
+            return;
           }
-        }
-      });
 
-      currentStreamPort.onDisconnect.addListener(() => {
-        currentStreamPort = null;
-      });
-    } catch (err) {
-      // 兼容环境异常降级回退
-      chrome.runtime.sendMessage({
-        action: 'translate',
-        text: text,
-        engine: engine,
-        targetLang: targetLang,
-        model: modelName
-      }, (response) => {
-        panelLoader.classList.add('hidden');
-        panelResultText.classList.remove('hidden');
-
-        if (!response) {
-          panelResultText.textContent = '翻译超时或服务未响应';
-          panelResultText.classList.add('error');
-          return;
-        }
-
-        if (response.success) {
-          panelResultText.textContent = response.translation;
-          panelResultText.classList.remove('error');
-          saveVocabularyRecord(text, response.translation, engine, false);
-        } else {
-          panelResultText.textContent = `出错: ${response.error}`;
-          panelResultText.classList.add('error');
-        }
-      });
-    }
+          if (response.success) {
+            panelResultText.textContent = response.translation;
+            panelResultText.classList.remove('error');
+            saveVocabularyRecord(text, response.translation, engine, false);
+          } else {
+            panelResultText.textContent = `出错: ${response.error}`;
+            panelResultText.classList.add('error');
+          }
+        });
+      }
+    });
   }
 
   // 点击悬浮图标触发翻译
@@ -1059,6 +1090,24 @@
     panelPinBtn.classList.toggle('active', isPinned);
     panelPinBtn.title = isPinned ? '取消固定' : '固定浮窗';
   });
+
+  // 专有名词双语对照开关
+  if (panelBilingualBtn) {
+    panelBilingualBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      getSettings((settings) => {
+        const nextVal = !(settings.enableBilingualNotation !== false);
+        chrome.storage.local.set({ enableBilingualNotation: nextVal }, () => {
+          panelBilingualBtn.classList.toggle('active', nextVal);
+          panelBilingualBtn.title = nextVal ? '专有名词双语备注：开启中（点击切换）' : '专有名词双语备注：已关闭（点击切换）';
+          if (currentSelectedText && !translatePanel.classList.contains('hidden')) {
+            const activeModel = panelModelSelect ? panelModelSelect.value : '';
+            doTranslation(currentSelectedText, panelEngineSelect.value, settings.defaultTargetLang || 'zh-CN', activeModel);
+          }
+        });
+      });
+    });
+  }
 
   // TTS 语音朗读
   function speakText(text) {

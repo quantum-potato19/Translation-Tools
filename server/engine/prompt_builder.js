@@ -1,26 +1,48 @@
 // 多角色多学科专家级 Prompt 编排器 (Multi-Persona Domain Prompt Builder)
 
+function formatMatchedTermRule(t, isSelection = false) {
+  const cat = t.category ? ` [${t.category}]` : '';
+  const abbrPart = t.abbr && !t.term.toLowerCase().includes(t.abbr.toLowerCase()) ? `, ${t.abbr}` : (t.abbr || '');
+  if (t.translation.toLowerCase() === t.term.toLowerCase()) {
+    return `- "${t.term}"${cat} => "${t.translation}"`;
+  }
+  if (t.translation.includes('(') || t.translation.includes('（')) {
+    return `- "${t.term}"${cat} => "${t.translation}"`;
+  }
+  if (isSelection) {
+    const originalNotation = `${t.term}${abbrPart ? ', ' + abbrPart : ''}`;
+    return `- "${t.term}"${cat} => "${t.translation} (${originalNotation})"`;
+  }
+  return `- "${t.term}"${cat} => "${t.translation}"`;
+}
+
 /**
  * 组装对应翻译角色的系统提示词
  * @param {Array<{ term: string, translation: string, category: string, abbr: string }>} matchedTerms 命中的权威专业术语
  * @param {string} targetLang 目标语言
  * @param {'general' | 'biochem' | 'economics'} persona 翻译角色
+ * @param {boolean} isSelection 是否为划词独立翻译场景 (true 为划词独立双语对照，false 为原排版防溢出)
  * @returns {string} 结构化专家级 System Prompt
  */
-export function buildBioSystemPrompt(matchedTerms = [], targetLang = 'zh-CN', persona = 'biochem') {
+export function buildBioSystemPrompt(matchedTerms = [], targetLang = 'zh-CN', persona = 'biochem', isSelection = false) {
   const langName = targetLang === 'zh-CN' ? '中文(学术规范简体)' : '目标语言';
+
+  const termRule = isSelection
+    ? `2. 核心学科专业词汇双语对照标注规范（划词翻译专属）：对于关键学术专有名词、核心术语及专业缩写（如本段命中的学科专有名词强制对齐表中的条目，以及单核苷酸变异、野生型、趾步介导的链置换、分子信标、λ-外切核酸酶等核心学术概念），译文必须输出为【中文定名 (英文原文/缩写)】的双语标注形态（例如：'单核苷酸变异 (single nucleotide variant, SNV)'、'野生型 (wild-type, WT)'、'λ-外切核酸酶 (λ-exonuclease)'），在中文定名旁边必须紧随半角圆括号备注其英文原文或缩写，确保学术查阅与原文索引精准对应。`
+    : `2. 原排版空间防溢出契约（必须严格遵守）：当前处于 PDF 原排版原位覆盖场景，专有名词必须以规范中文定名为主，严禁在正文中机械附加冗长的英文全称括号（坚决防止因译文长度暴增导致原排版区域重叠、溢出或字号过度压缩）。仅在当前页首次出现且具有通用极短缩写时允许紧随半角括号备注缩写（如“野生型 (WT)”）；后续出现一律直接采用中文定名。`;
 
   // 全局核心翻译铁律与排版契约 (适用于所有翻译角色)
   const coreTranslationRules = `
 【翻译核心执行铁律与排版契约 (绝对强制遵守)】:
 1. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法、公差与取值范围（如 15, 2024, 0.05, 95%, 3.2×10⁻⁵, ±0.5 mg/L）必须 100% 保持原始阿拉伯数字形态与格式，绝对严禁转写为汉字数字（严禁写成“十五”、“二〇二四”、“零点零五”）。
-2. 专用词汇首次出现标注原则 (First-Occurrence Rule)：翻译专用词汇（专有名词、国际组织、学术机构、特定学术理论、专属缩略词）时，仅在当前段落/页面首次出现时在中文译名后以半角括号附带英文原文或缩写，格式如：“世界自然基金会 (World Wildlife Fund)”、“世界自然基金会 (WWF)”。在同一段落或页面内后续再次出现时，严禁重复附加英文括号，直接使用中文规范定名或标准缩写，坚决防止译文长度膨胀导致排版溢出。
-3. 多行标题与自然段落智能区分契约：
-   - 独立多行标题与条目清单（如分行目录、联系方式/元数据、章节子标题等）：当输入段落显式由独立单行组成（各行语义独立，以 \n 分隔），译文必须严格保持相同行数与换行符位置，严禁将第二行标题强行挤入第一行！
+${termRule}
+3. 特殊符号与希腊字母原样完整显示：λ、5'、3'、ΔG°、ΔΔG°、ΔTm、→ 等科学与生物物理特殊符号，在中文译文中必须原样保留并完整清晰显示，绝对严禁擅自篡改、省略、退化为普通英文字母或误写为普通数字。
+4. 多行标题与自然段落智能区分契约：
+   - 独立多行标题与条目清单（如分行目录、联系方式/元数据、章节子标题等）：当输入段落显式由独立单行组成（各行语义独立，以 \\n 分隔），译文必须严格保持相同行数与换行符位置，严禁将第二行标题强行挤入第一行！
    - 自然连续正文段落：若英文仅因排版宽度产生软折行，已由前置引擎合并为连贯长句；翻译时以中文语义通顺流畅为准，严禁生硬切断成破碎短句。
-4. 国际计量单位绝对禁译：所有 SI 国际标准单位及量纲符号（如 mg, mL, μm, kDa, mol/L, rpm, °C, wt%, bp, kb, USD, bps）必须原样保留英文字符与规范大小写，绝对严禁汉化为“毫克”、“毫升”、“微米”等汉字。
-5. 图表与文献索引规范：图表索引（如 Figure 1A, Table 2, Scheme 3）准确对应规范中文（如“图 1A”、“表 2”、“方案 3”），且编号与子标记（A/B/C）及文献引用标号（如 [12], [1-3]）绝对严禁篡改或丢失。
-6. 占位符严禁篡改：文本中包含的形如 "__NUM_0__"、"__BIO_SYM_0__" 或 "__SAFE_PII_0__" 的占位符，必须原样保留在译文对应的逻辑位置，严禁翻译、拆解、改动或丢弃。`;
+5. 国际计量单位绝对禁译：所有 SI 国际标准单位及量纲符号（如 mg, mL, μm, kDa, mol/L, rpm, °C, wt%, bp, kb, USD, bps）必须原样保留英文字符与规范大小写，绝对严禁汉化为“毫克”、“毫升”、“微米”等汉字。
+6. 图表与文献索引规范：图表索引（如 Figure 1A, Table 2, Scheme 3）准确对应规范中文（如“图 1A”、“表 2”、“方案 3”），且编号与子标记（A/B/C）及文献引用标号（如 [12], [1-3]）绝对严禁篡改或丢失。
+7. 占位符严禁篡改：文本中包含的形如 "__NUM_0__"、"__BIO_SYM_0__" 或 "__SAFE_PII_0__" 的占位符，必须原样保留在译文对应的逻辑位置，严禁翻译、拆解、改动或丢弃。`;
 
   // 1. 默认通用翻译角色 (大众顺畅阅读，无生硬机器翻译腔)
   if (persona === 'general') {
@@ -45,11 +67,11 @@ ${coreTranslationRules}`;
 ${coreTranslationRules}`;
 
     if (matchedTerms && matchedTerms.length > 0) {
-      prompt += `\n\n【本段核心命中经济与金融术语强制对齐表 (请严格按下列定名翻译)】:`;
+      prompt += isSelection
+        ? `\n\n【本段核心命中经济与金融术语强制对齐表 (请遵循中文并在旁边半角括号备注原文)】:`
+        : `\n\n【本段核心命中经济与金融术语强制对齐表 (原排版规范中文定名，严禁添加冗长括号英文以防版面溢出)】:`;
       matchedTerms.forEach(t => {
-        const cat = t.category ? ` [${t.category}]` : '';
-        const abbr = t.abbr ? ` (缩写: ${t.abbr})` : '';
-        prompt += `\n- "${t.term}"${abbr}${cat} => "${t.translation}"`;
+        prompt += '\n' + formatMatchedTermRule(t, isSelection);
       });
     }
     return prompt;
@@ -64,14 +86,18 @@ ${coreTranslationRules}`;
 2. 语态转换：英文科技文献中常见的弱被动句型，应符合中文学术文献的无主句或客观陈述习惯（如“采用...方法测定”、“结果表明”），严禁口语化或机械翻译。
 3. 专有名词保护：严禁意译实验标准方法名（如 Western blot 必须译为 免疫印迹法，不得意译为“西部污点”；RT-qPCR 必须保留规范中文名称）。
 4. 拉丁学名与固定术语：双名法物种学名（如 Escherichia coli）与固定拉丁短语（如 in vitro, in vivo, et al.）必须保留规范学名/拉丁外文或标准学术译名。
+5. 核酸与生物物理核心符号规范（强制执行）：
+   - 核酸链端向与修饰：5' 与 3'（如 5'端、3'端、5'-PO4、5'-磷酸化、5' → 3' 外切核酸酶）必须原样保留撇号（Prime）或译为“5'端/3'端”，绝对严禁将其误识别或篡改翻译为数字“50”或“30”！
+   - 特殊希腊字母与酶命名：λ-exonuclease 必须翻译为“λ-外切核酸酶”或“λ-外切酶”（严禁误译为 l-外切酶或 k-外切酶）。
+   - 核心缩写与热力学符号：SNV 译为“单核苷酸变异”，WT 译为“野生型”，TMSD 译为“趾步介导的链置换”，MB 译为“分子信标”，cfDNA 译为“无细胞 DNA / 游离 DNA”；ΔG / ΔΔG / ΔTm 保持原始希腊物理化学符号，严禁篡改为英文字母 D。
 ${coreTranslationRules}`;
 
   if (matchedTerms && matchedTerms.length > 0) {
-    prompt += `\n\n【本段核心命中术语强制对齐表 (请严格按照下列学科规范翻译)】:`;
+    prompt += isSelection
+      ? `\n\n【本段核心命中术语强制对齐表 (请遵循中文并在旁边半角括号备注原文)】:`
+      : `\n\n【本段核心命中术语强制对齐表 (原排版规范中文定名，严禁添加冗长括号英文以防版面溢出)】:`;
     matchedTerms.forEach(t => {
-      const cat = t.category ? ` [${t.category}]` : '';
-      const abbr = t.abbr ? ` (缩写: ${t.abbr})` : '';
-      prompt += `\n- "${t.term}"${abbr}${cat} => "${t.translation}"`;
+      prompt += '\n' + formatMatchedTermRule(t, isSelection);
     });
   }
 
@@ -88,7 +114,7 @@ ${coreTranslationRules}`;
  * @returns {{ systemPrompt: string, userPrompt: string }}
  */
 export function buildBioBatchPrompt(items, matchedTerms = [], crossPageContext = null, targetLang = 'zh-CN', persona = 'biochem') {
-  let systemPrompt = buildBioSystemPrompt(matchedTerms, targetLang, persona);
+  let systemPrompt = buildBioSystemPrompt(matchedTerms, targetLang, persona, false);
 
   systemPrompt += `\n\n【输出格式契约】
 1. 必须输出且仅输出纯 JSON 数组，格式为 [{"id": 0, "text": "译文"}...]。
