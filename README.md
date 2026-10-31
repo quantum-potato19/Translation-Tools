@@ -35,7 +35,7 @@
 ## 🚀 Quick Start
 
 ### Option A: Install from Pre-built Zip (Recommended)
-1. Download or grab `release/translate-fy-v1.0.1.zip`.
+1. Download or grab `release/translate-fy-v1.0.2.zip`.
 2. Unpack the zip file into a local folder.
 3. Open `chrome://extensions` (or `edge://extensions`), enable **Developer mode**, click **Load unpacked**, and select the unpacked folder.
 

@@ -36,7 +36,7 @@
 ## 🚀 快速上手
 
 ### 方式一：直接安装离线包（推荐）
-1. 获取已打包好的 `release/translate-fy-v1.0.1.zip`；
+1. 获取已打包好的 `release/translate-fy-v1.0.2.zip`；
 2. 解压至本地任意固定文件夹；
 3. 打开 Chrome / Edge 浏览器，访问 `chrome://extensions`，右上角开启 **开发者模式**，点击 **加载已解压的扩展程序** 并选择解压目录。
 

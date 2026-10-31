@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Translate FY",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "极简优雅的划词翻译、AI 智能查词与 PDF 文档阅读扩展",
   "permissions": [
     "storage",

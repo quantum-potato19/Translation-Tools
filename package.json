@@ -1,6 +1,6 @@
 {
   "name": "translate-fy",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "极简优雅的划词翻译、AI 智能查词与长文档 PDF 沉浸式阅读 Chrome 扩展",
   "type": "module",
   "scripts": {
