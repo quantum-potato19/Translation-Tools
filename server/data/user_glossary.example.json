@@ -1,14 +1,14 @@
 {
   "description": "用户自定义科研术语与课题组专有名词模板 (可复制为 user_glossary.json 并在本地自由拓展)",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "terms": {
-    "pbs": "磷酸盐缓冲液 (PBS)",
-    "dmem": "DMEM培养基",
-    "fbs": "胎牛血清 (FBS)",
-    "dmso": "二甲基亚砜 (DMSO)",
-    "dtt": "二硫苏糖醇 (DTT)",
-    "edta": "乙二胺四乙酸 (EDTA)",
-    "egta": "乙二醇双(2-氨基乙基醚)四乙酸 (EGTA)",
-    "tbs-t": "TBST洗涤缓冲液"
+    "pbs": { "en": "PBS", "zh": "磷酸盐缓冲液", "abbr": "PBS", "category": "通用生化试剂" },
+    "dmem": { "en": "DMEM", "zh": "DMEM培养基", "abbr": "DMEM", "category": "细胞培养" },
+    "fbs": { "en": "FBS", "zh": "胎牛血清", "abbr": "FBS", "category": "细胞培养" },
+    "dmso": { "en": "DMSO", "zh": "二甲基亚砜", "abbr": "DMSO", "category": "通用溶剂" },
+    "dtt": { "en": "DTT", "zh": "二硫苏糖醇", "abbr": "DTT", "category": "生化试剂" },
+    "edta": { "en": "EDTA", "zh": "乙二胺四乙酸", "abbr": "EDTA", "category": "螯合剂" },
+    "egta": { "en": "EGTA", "zh": "乙二醇双(2-氨基乙基醚)四乙酸", "abbr": "EGTA", "category": "螯合剂" },
+    "tbs-t": { "en": "TBS-T", "zh": "TBST洗涤缓冲液", "abbr": "TBS-T", "category": "免疫实验" }
   }
 }

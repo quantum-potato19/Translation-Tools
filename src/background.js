@@ -1,5 +1,28 @@
 // Background Service Worker for Lite Translate (方案 A：内置 PDF.js 阅读器接管引擎)
-import { matchTerms } from './term_matcher.js';
+import { matchTerms, setUserGlossary } from './term_matcher.js';
+import {
+  ENGINE_STORAGE_DEFAULTS,
+  DEFAULT_PERSONA,
+  getLangPromptName,
+  isChineseLangCode,
+  USER_GLOSSARY_KEY,
+  isAIEngineId
+} from './shared/constants.js';
+
+// 初始化加载用户自定义术语库并监听实时变化
+if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+  chrome.storage.local.get({ [USER_GLOSSARY_KEY]: [] }, (res) => {
+    if (Array.isArray(res[USER_GLOSSARY_KEY])) {
+      setUserGlossary(res[USER_GLOSSARY_KEY]);
+    }
+  });
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes[USER_GLOSSARY_KEY]) {
+      setUserGlossary(changes[USER_GLOSSARY_KEY].newValue || []);
+    }
+  });
+}
 
 const DNR_PDF_RULE_ID = 2001;
 
@@ -246,16 +269,18 @@ let bgGoogleCooldownUntil = 0;
 const BG_GOOGLE_CLIENTS = ['gtx', 'dict-chrome-ex', 'webapp'];
 let bgClientIndex = 0;
 
-async function translateGoogle(text, targetLang) {
+async function translateGoogle(text, targetLang, sourceLang = 'auto') {
   if (!text || typeof text !== 'string') return '';
   const now = Date.now();
   if (now < bgGoogleCooldownUntil) {
     throw new Error('Google 通道处于冷却保护期 (429)');
   }
 
+  const sl = (sourceLang && sourceLang !== 'auto') ? sourceLang : 'auto';
+
   for (let i = 0; i < BG_GOOGLE_CLIENTS.length; i++) {
     const client = BG_GOOGLE_CLIENTS[(bgClientIndex + i) % BG_GOOGLE_CLIENTS.length];
-    const url = `https://translate.googleapis.com/translate_a/single?client=${client}&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+    const url = `https://translate.googleapis.com/translate_a/single?client=${client}&sl=${sl}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
     try {
       const res = await fetchWithTimeout(url, {}, 8000);
       if (res.status === 429) {
@@ -313,7 +338,7 @@ async function getBingToken() {
   return bingTokenCache;
 }
 
-async function translateBing(text, targetLang) {
+async function translateBing(text, targetLang, sourceLang = 'auto') {
   const langMap = {
     'zh-CN': 'zh-Hans',
     'en': 'en',
@@ -321,12 +346,13 @@ async function translateBing(text, targetLang) {
     'ko': 'ko'
   };
   const to = langMap[targetLang] || targetLang;
+  const from = (sourceLang && sourceLang !== 'auto') ? (langMap[sourceLang] || sourceLang) : 'auto-detect';
 
   let tokenInfo = await getBingToken();
 
   const doReq = async (info) => {
     const params = new URLSearchParams();
-    params.append('fromLang', 'auto-detect');
+    params.append('fromLang', from);
     params.append('text', text);
     params.append('to', to);
     params.append('key', info.key);
@@ -359,7 +385,7 @@ async function translateBing(text, targetLang) {
 }
 
 // DeepL 翻译 (支持免 Key 通道或官方 50万字符/月 免费 Key)
-async function translateDeepL(text, targetLang, apiKey, customEndpoint) {
+async function translateDeepL(text, targetLang, apiKey, customEndpoint, sourceLang = 'auto') {
   const langMap = {
     'zh-CN': 'ZH',
     'en': 'EN-US',
@@ -367,6 +393,7 @@ async function translateDeepL(text, targetLang, apiKey, customEndpoint) {
     'ko': 'KO'
   };
   const target = langMap[targetLang] || targetLang.toUpperCase();
+  const source = (sourceLang && sourceLang !== 'auto') ? (langMap[sourceLang] || sourceLang).toUpperCase() : null;
 
   // 若用户配置了官方 API Key
   if (apiKey && apiKey.trim()) {
@@ -375,16 +402,19 @@ async function translateDeepL(text, targetLang, apiKey, customEndpoint) {
     const defaultEndpoint = isFree ? 'https://api-free.deepl.com/v2/translate' : 'https://api.deepl.com/v2/translate';
     const endpoint = (customEndpoint && customEndpoint.trim()) ? customEndpoint.trim() : defaultEndpoint;
 
+    const payload = {
+      text: [text],
+      target_lang: target
+    };
+    if (source) payload.source_lang = source;
+
     const res = await fetchWithTimeout(endpoint, {
       method: 'POST',
       headers: {
         'Authorization': `DeepL-Auth-Key ${key}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        text: [text],
-        target_lang: target
-      })
+      body: JSON.stringify(payload)
     }, 12000);
 
     if (!res.ok) {
@@ -405,7 +435,7 @@ async function translateDeepL(text, targetLang, apiKey, customEndpoint) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       text: text,
-      source_lang: 'auto',
+      source_lang: source || 'auto',
       target_lang: target
     })
   }, 12000);
@@ -432,13 +462,18 @@ function truncateForYoudao(q) {
   return q.substring(0, 10) + len + q.substring(len - 10);
 }
 
-async function translateYoudao(text, targetLang, appKey, appSecret) {
+async function translateYoudao(text, targetLang, appKey, appSecret, sourceLang = 'auto') {
   if (!appKey || !appSecret) {
     throw new Error('未配置有道智云 AppKey 或 AppSecret，请在设置中配置');
   }
 
   let toLang = targetLang;
   if (targetLang === 'zh-CN') toLang = 'zh-CHS';
+
+  let fromLang = 'auto';
+  if (sourceLang && sourceLang !== 'auto') {
+    fromLang = sourceLang === 'zh-CN' ? 'zh-CHS' : sourceLang;
+  }
 
   const salt = Date.now().toString();
   const curtime = Math.round(Date.now() / 1000).toString();
@@ -447,7 +482,7 @@ async function translateYoudao(text, targetLang, appKey, appSecret) {
 
   const params = new URLSearchParams({
     q: text,
-    from: 'auto',
+    from: fromLang,
     to: toLang,
     appKey: appKey,
     salt: salt,
@@ -489,7 +524,7 @@ async function translateYoudao(text, targetLang, appKey, appSecret) {
   throw new Error(errorMessages[data.errorCode] || `有道智云接口错误代码: ${data.errorCode}`);
 }
 
-// 2.9 高危数值与科学计数法硬遮罩保护引擎 (Deterministic Number Masker)
+// 2.9 高危数值与科学计数法硬遮罩保护引擎 (Deterministic Number & Bio-entity Masker)
 function maskNumericEntities(text) {
   if (!text || typeof text !== 'string') return { maskedText: text, tokenMap: new Map() };
   const tokenMap = new Map();
@@ -502,13 +537,26 @@ function maskNumericEntities(text) {
   }
 
   let result = text;
-  result = result.replace(/\b\d+(?:\.\d+)?\s*[×x*]\s*10[\^⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹\-+\d]+/g, (m) => replaceWithToken(m));
-  result = result.replace(/\b10[\^⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹\-+\d]+/g, (m) => replaceWithToken(m));
+  // 1. 科学计数法 (仅匹配显式指数：10^... 或 10上标，或 a × 10^b，以及 e/E 浮点记号，避免误伤 100/1000/10-fold)
+  result = result.replace(/\b\d+(?:\.\d+)?\s*[×x*]\s*10(?:\^[-+−]?\d+|[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)/g, (m) => replaceWithToken(m));
+  result = result.replace(/\b10(?:\^[-+−]?\d+|[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)/g, (m) => replaceWithToken(m));
   result = result.replace(/\b\d+(?:\.\d+)?[eE][-+]?\d+\b/g, (m) => replaceWithToken(m));
+
+  // 2. 负温及带单位取值范围 (如 -20 °C, -80 ℃, 10-20 μM, 0.05–0.10 μM, ±0.5 mg/L)
   result = result.replace(/[-−–]?\d+(?:\.\d+)?\s*(?:°C|℃|°F|K|mg\/[mμn]?L|[mμn]?M|%|rpm|kDa|bp|kb)?\s*(?:[-~–—]|to)\s*[-−–]?\d+(?:\.\d+)?\s*(?:°C|℃|°F|K|mg\/[mμn]?L|[mμn]?M|%|rpm|kDa|bp|kb)\b/gi, (m) => replaceWithToken(m));
   result = result.replace(/[-−–]\s*\d+(?:\.\d+)?\s*(?:°C|℃|°F|K)\b/gi, (m) => replaceWithToken(m));
+
+  // 3. 公差与误差范围 (如 ±0.5, ±0.5%, ± 0.02 mg/mL)
   result = result.replace(/[±]\s*\d+(?:\.\d+)?(?:\s*(?:%|[a-zA-Z\/]+))?/g, (m) => replaceWithToken(m));
+
+  // 4. 高精度有符号浮点数与负数百分比
   result = result.replace(/[-−]\s*\d+(?:\.\d+)?%/g, (m) => replaceWithToken(m));
+
+  // 5. 生化特征实体保护：CAS号、酶学/动力学指标、常见限制性内切酶
+  result = result.replace(/(?:\[\s*)?\b\d{2,7}-\d{2}-\d\b(?:\s*\])?/g, (m) => replaceWithToken(m));
+  result = result.replace(/\b(IC50|EC50|Kd|Km|Ki|kcat|Vmax|RMSD|pKa|pKb|m\/z)\s*([=><≤≥~]\s*[\d.]+\s*(?:[npuμm]?M|[npuμm]?g\/mL|s-1|h|min|%)?)/gi, (m) => replaceWithToken(m));
+  result = result.replace(/\bp\s*([<>=≤≥]\s*0?\.\d+)\b/gi, (m) => replaceWithToken(m));
+  result = result.replace(/\b(CRISPR-(?:Cas9|Cas12a|Cas13)|(?:d?Cas9|EcoRI|BamHI|HindIII|NotI|XhoI|SalI|BglII|Taq|Pfu))\b/g, (m) => replaceWithToken(m));
 
   return { maskedText: result, tokenMap };
 }
@@ -524,28 +572,8 @@ function unmaskNumericEntities(translatedText, tokenMap) {
 }
 
 // 3. AI 翻译服务逻辑
-const GLOBAL_LANG_NAME_MAP = {
-  'zh-CN': '中文(简体)',
-  'zh-TW': '中文(繁体)',
-  'en': '英语 (English)',
-  'ja': '日语 (Japanese)',
-  'ko': '韩语 (Korean)',
-  'fr': '法语 (French)',
-  'de': '德语 (German)',
-  'es': '西班牙语 (Spanish)',
-  'ru': '俄语 (Russian)',
-  'it': '意大利语 (Italian)',
-  'pt': '葡萄牙语 (Portuguese)',
-  'ar': '阿拉伯语 (Arabic)',
-  'vi': '越南语 (Vietnamese)',
-  'th': '泰语 (Thai)',
-  'nl': '荷兰语 (Dutch)',
-  'pl': '波兰语 (Polish)'
-};
-
 function isChineseLang(targetLang) {
-  if (!targetLang) return true;
-  return targetLang === 'zh' || targetLang === 'zh-CN' || targetLang === 'zh-TW';
+  return isChineseLangCode(targetLang);
 }
 
 function isEnglishLang(targetLang) {
@@ -553,21 +581,24 @@ function isEnglishLang(targetLang) {
 }
 
 function getTargetLangFullName(targetLang, isAcademic = false) {
-  if (!targetLang) return isAcademic ? '中文(学术规范简体)' : '中文(简体)';
-  if (targetLang === 'zh-CN') return isAcademic ? '中文(学术规范简体)' : '中文(简体)';
-  return GLOBAL_LANG_NAME_MAP[targetLang] || targetLang;
+  if (!targetLang || targetLang === 'zh' || targetLang === 'zh-CN') {
+    return isAcademic ? '中文(学术规范简体)' : '中文(简体)';
+  }
+  return getLangPromptName(targetLang) || targetLang;
 }
 
-function formatMatchedTermRule(t, isSelection = false) {
+function formatMatchedTermRule(t, enableBilingual = true, isSelection = false) {
   const cat = t.category ? ` [${t.category}]` : '';
   const abbrPart = t.abbr && !t.term.toLowerCase().includes(t.abbr.toLowerCase()) ? `, ${t.abbr}` : (t.abbr || '');
   if (t.translation.toLowerCase() === t.term.toLowerCase()) {
     return `- "${t.term}"${cat} => "${t.translation}"`;
   }
-  if (t.translation.includes('(') || t.translation.includes('（')) {
+  // 批量原位排版模式：严禁在狭小物理框中追加英文括号或词典释义，防止溢出
+  if (!isSelection) {
     return `- "${t.term}"${cat} => "${t.translation}"`;
   }
-  if (isSelection) {
+  // 划词模式：根据开关决定是否附带双语溯源括号
+  if (enableBilingual) {
     const originalNotation = `${t.term}${abbrPart ? ', ' + abbrPart : ''}`;
     return `- "${t.term}"${cat} => "${t.translation} (${originalNotation})"`;
   }
@@ -575,9 +606,9 @@ function formatMatchedTermRule(t, isSelection = false) {
 }
 
 // 多学科/多角色学术论文特殊符号与标点拓扑自愈引擎 (按角色专有生效: biochem/economics/general)
-function healAcademicSymbols(text, persona = 'biochem') {
+function healAcademicSymbols(text, persona = DEFAULT_PERSONA) {
   if (!text || typeof text !== 'string') return '';
-  const targetPersona = persona || 'biochem';
+  const targetPersona = persona || DEFAULT_PERSONA;
   let s = text;
 
   // 通用基础排版与连字符断字通用修复
@@ -613,12 +644,13 @@ function healAcademicSymbols(text, persona = 'biochem') {
     s = s.replace(/\(5'-PO4\s+\)/g, "(5'-PO4)");
 
     // B1. 极罕见非标准修饰标记：化学修饰星号 * 硫代骨架 (Phosphorothioate backbone 5'-*PO4 / 5'-*端)
-    s = s.replace(/\b(?:5\s*0|50)\s*[-–—]?\s*\*\s*PO\s*4\b/gi, "5'-*PO4");
-    s = s.replace(/5['′]\s*[-–—]?\s*\*\s*PO\s*4\b/gi, "5'-*PO4");
-    s = s.replace(/\b(?:5\s*0|50)\s*[-–—]?\s*\*\s*[-–—]?\s*([a-zA-Z0-9]+)\b/gi, "5'-*$1");
-    s = s.replace(/\b(?:3\s*0|30)\s*[-–—]?\s*\*\s*[-–—]?\s*([a-zA-Z0-9]+)\b/gi, "3'-*$1");
-    s = s.replace(/5['′]\s*[-–—]?\s*\*\s*([a-zA-Z0-9]+)\b/gi, "5'-*$1");
-    s = s.replace(/3['′]\s*[-–—]?\s*\*\s*([a-zA-Z0-9]+)\b/gi, "3'-*$1");
+    // 约束：必须紧贴字母或修饰名，两端不可有四则运算空格，防止误伤 50 * 2
+    s = s.replace(/\b(?:5\s*0|50)\s*[-–—]?\*(?:PO\s*4|PO4)\b/gi, "5'-*PO4");
+    s = s.replace(/5['′]\s*[-–—]?\*(?:PO\s*4|PO4)\b/gi, "5'-*PO4");
+    s = s.replace(/\b(?:5\s*0|50)\*([a-zA-Z0-9]+)\b/gi, "5'-*$1");
+    s = s.replace(/\b(?:3\s*0|30)\*([a-zA-Z0-9]+)\b/gi, "3'-*$1");
+    s = s.replace(/5['′]\*([a-zA-Z0-9]+)\b/gi, "5'-*$1");
+    s = s.replace(/3['′]\*([a-zA-Z0-9]+)\b/gi, "3'-*$1");
 
     // B2. 极罕见学术同位素标记标号 (如 32P-labeled 5'-end / [32P] / γ-32P-ATP)
     s = s.replace(/(?:\[\s*|\b)(?:γ|gamma)\s*[-–—]?\s*(?:32\s*P|33\s*P)\s*\]?\s*[-–—]?\s*ATP\b/gi, 'γ-32P-ATP');
@@ -630,36 +662,36 @@ function healAcademicSymbols(text, persona = 'biochem') {
     s = s.replace(/(\b(?:32|33)P|\b(?:35)S)-labeled\s+(?:5\s*0|50)\s*[-–—]?\s*(end|termini|terminus|overhang|PO\s*4)\b/gi, "$1-labeled 5'-$2");
     s = s.replace(/(\b(?:32|33)P|\b(?:35)S)\s*[-–—]?\s*(?:5\s*0|50)\s*[-–—]?\s*(end|termini|terminus|overhang|PO\s*4)\b/gi, "$1-5'-$2");
 
-    // C. 结构末端与酶切特征修饰 (结合上下文白名单精准防误伤，扩充生物标记物与化学修饰)
+    // C. 结构末端与酶切特征修饰
     const primeContexts = '(?:phosphorylated|phosphate|hydroxyl|end|termini|terminal|terminus|overhang|protruding|carbon|splice|UTR|exonuclease|recessed|flap|stem|arm|tail|strand|dye|fluorophore|quencher|probe|primer|labeled|biotin|thiol|amine|digoxigenin|DIG|Cy3|Cy5|FAM|FITC|HEX|TET|Texas\\s*Red|Alexa\\s*\\d+|ps|phosphorothioate)';
     const re5Prime = new RegExp('\\b(?:5\\s*0|50)\\s*[-–—]\\s*(' + primeContexts + ')\\b', 'gi');
     s = s.replace(re5Prime, "5'-$1");
     const re3Prime = new RegExp('\\b(?:3\\s*0|30)\\s*[-–—]\\s*(' + primeContexts + ')\\b', 'gi');
     s = s.replace(re3Prime, "3'-$1");
 
-    // D. 介词短语修饰 (at/to/near the 50-end -> 5'-end)
+    // D. 介词短语修饰
     s = s.replace(/\b(the|its|at|from|to|near|close to the|adjacent to the)\s+(?:5\s*0|50)\s*[-–—]?\s*(end|termini|terminus|overhang|side)\b/gi, "$1 5'-$2");
     s = s.replace(/\b(the|its|at|from|to|near|close to the|adjacent to the)\s+(?:3\s*0|30)\s*[-–—]?\s*(end|termini|terminus|overhang|side)\b/gi, "$1 3'-$2");
     s = s.replace(/\b(?:5\s*0|50)\s*[-–—]\s*(end|termini|terminus|overhang)\b/gi, "5'-$1");
     s = s.replace(/\b(?:3\s*0|30)\s*[-–—]\s*(end|termini|terminus|overhang)\b/gi, "3'-$1");
 
-    // 热力学与物理化学自由能差/物理量 (ΔG, ΔΔG, ΔTm, ΔH, ΔS)
-    s = s.replace(/\bDD\s*G\s*(?:1|°|o)?\b/g, 'ΔΔG°');
-    s = s.replace(/\bD\s*G\s*(?:1|°|o)?\b/g, 'ΔG°');
-    s = s.replace(/\bD\s*T\s*(?:m)?\b/g, 'ΔTm');
-    s = s.replace(/\bD\s*H\s*(?:1|°|o)?\b/g, 'ΔH°');
-    s = s.replace(/\bD\s*S\s*(?:1|°|o)?\b/g, 'ΔS°');
+    // 热力学与物理化学自由能差：要求明确后缀 (1, °, o, ‡) 或紧跟等号数值，避免误伤 DG/DH/DS/DT 独立缩写
+    s = s.replace(/\bDD\s*G\s*(?:[1°o‡]|\b(?=\s*=\s*[-−]?\d))/g, 'ΔΔG°');
+    s = s.replace(/\bD\s*G\s*(?:[°o‡]|\b(?=\s*=\s*[-−]?\d))/g, 'ΔG°');
+    s = s.replace(/\bD\s*T\s*m\b/g, 'ΔTm');
+    s = s.replace(/\bD\s*H\s*(?:[°o‡]|\b(?=\s*=\s*[-−]?\d))/g, 'ΔH°');
+    s = s.replace(/\bD\s*S\s*(?:[°o‡]|\b(?=\s*=\s*[-−]?\d))/g, 'ΔS°');
 
-    // 译文中文后处理自愈保护 (纠正模型可能混淆的字符)
+    // 译文中文后处理自愈保护 (增加左边界防误伤 250 端)
     s = s.replace(/(?<=[^\w]|^)[lk]\s*[-–—]\s*(?:外切核酸酶|外切酶)/gi, 'λ-外切核酸酶');
     s = s.replace(/(?:32\s*P|33\s*P)\s*[-–—]?\s*(?:标记|标号)\s*(?:的\s*)?(?:5\s*0|50)\s*端?/gi, "32P-标记 5'端");
-    s = s.replace(/(?:5\s*0|50)\s*[-–—]?\s*\*\s*PO4/gi, "5'-*PO4");
-    s = s.replace(/(?:5\s*0|50)\s*[-–—]?\s*\*\s*端/gi, "5'-*端");
-    s = s.replace(/(?:3\s*0|30)\s*[-–—]?\s*\*\s*端/gi, "3'-*端");
-    s = s.replace(/50\s*端/g, "5'端");
-    s = s.replace(/30\s*端/g, "3'端");
-    s = s.replace(/50\s*[-–—]\s*PO4/g, "5'-PO4");
-    s = s.replace(/50\s*(?:到|至|[-–—]|→)\s*30\s*端?/g, "5'到 3'端");
+    s = s.replace(/(?<![0-9.])50\s*[-–—]?\*\s*PO4/g, "5'-*PO4");
+    s = s.replace(/(?<![0-9.])50\s*[-–—]?\*\s*端/g, "5'-*端");
+    s = s.replace(/(?<![0-9.])30\s*[-–—]?\*\s*端/g, "3'-*端");
+    s = s.replace(/(?<![0-9.])50\s*端/g, "5'端");
+    s = s.replace(/(?<![0-9.])30\s*端/g, "3'端");
+    s = s.replace(/(?<![0-9.])50\s*[-–—]\s*PO4/g, "5'-PO4");
+    s = s.replace(/(?<![0-9.])50\s*(?:到|至|[-–—]|→)\s*30\s*端?/g, "5'到 3'端");
   } else if (targetPersona === 'economics') {
     s = s.replace(/\bD\s*GDP\b/g, 'ΔGDP');
     s = s.replace(/\bD\s*CPI\b/g, 'ΔCPI');
@@ -671,28 +703,31 @@ function healAcademicSymbols(text, persona = 'biochem') {
   return s;
 }
 
-// Google Gemini 官方接口翻译 (终身免费额度，支持上下文语境与学科角色术语对齐)
-async function translateGemini(text, targetLang, apiKey, modelName, context = null, persona = 'biochem', customPersonaPrompts = {}, enableBilingual = true) {
-  if (!apiKey) throw new Error('未配置 Gemini API Key，请在设置中配置');
-  const cleanModel = (modelName || 'gemini-2.0-flash').replace(/^models\//, '');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${apiKey}`;
-  const langName = getTargetLangFullName(targetLang, false);
-  
-  const { maskedText, tokenMap } = maskNumericEntities(text);
-  const activePersona = typeof persona === 'string' ? persona : (persona ? 'biochem' : 'general');
-  const fullScanText = (text || '') + (context ? ' ' + context : '');
-  const matchedTerms = matchTerms(fullScanText, 10, activePersona);
-
-  let prompt = '';
-  const isShortTermWithContext = !!(context && context.trim() && text && text.trim().length <= 80 && !text.includes('\n'));
+// 3.0 统一 AI 翻译提示词构建引擎 (Prompt Builder for Gemini / OpenAI-compatible / Streaming)
+function buildTranslationPrompt({
+  maskedText,
+  targetLang,
+  sourceLang = 'auto',
+  context = null,
+  persona = DEFAULT_PERSONA,
+  customPersonaPrompts = {},
+  enableBilingual = true,
+  isSelection = true,
+  matchedTerms = []
+}) {
+  const activePersona = persona || DEFAULT_PERSONA;
+  const langName = getTargetLangFullName(targetLang, activePersona !== 'general');
+  const isTargetChinese = isChineseLang(targetLang);
+  const isShortTermWithContext = !!(isSelection && context && context.trim() && maskedText && maskedText.trim().length <= 80 && !maskedText.includes('\n'));
+  const sourceLangHint = (sourceLang && sourceLang !== 'auto') ? `源语言为【${getLangPromptName(sourceLang)}】。` : '';
 
   if (isShortTermWithContext) {
     let personaRole = '专业的高级学术与通用翻译官';
     if (activePersona === 'biochem') personaRole = '国际顶级期刊 (如 Cell, Nature, JACS) 的生物化学与分子生物学资深学术专家';
     else if (activePersona === 'economics') personaRole = '国际顶级期刊 (如 AER, QJE, JF) 的金融与计量经济学资深评审专家';
 
-    prompt = `你是一名${personaRole}。
-用户在下方文献语境中选中了专业学术词汇/短语【${maskedText}】。请结合上下文语境进行专业消歧，严格且只能将其精准翻译为${langName}。
+    let sysPrompt = `你是一名${personaRole}。
+用户在文献语境中选中了词汇/短语【${maskedText}】。${sourceLangHint}请结合上下文语境进行专业消歧，严格且只能将其精准翻译为${langName}。
 
 严格执行规则：
 1. 目标语言唯一性强制：翻译结果必须严格使用指定的目标语言【${langName}】，绝对严禁输出任何非指定的目标语种！
@@ -700,79 +735,121 @@ async function translateGemini(text, targetLang, apiKey, modelName, context = nu
 3. 仅翻译所选词汇：绝对严禁翻译或复述上下文语境内容！
 4. 输出简洁无干扰：直接输出最贴合该专业语境的最终译名，不要包含任何前导解释、拼音、注脚或标点说明。`;
 
-    if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-      prompt += enableBilingual
+    if (isTargetChinese && matchedTerms && matchedTerms.length > 0) {
+      sysPrompt += enableBilingual
         ? `\n\n【权威学科审定专有名词定名标准 (划词双语对照)】:`
         : `\n\n【权威学科审定专有名词定名标准 (纯中文规范定名)】:`;
       matchedTerms.forEach(t => {
-        prompt += '\n' + formatMatchedTermRule(t, enableBilingual);
+        sysPrompt += '\n' + formatMatchedTermRule(t, enableBilingual, true);
       });
-    } else if (!isChineseLang(targetLang) && !isEnglishLang(targetLang)) {
-      prompt += `\n\n【本土化学术规范强制约束】:
-严格遵循【${langName}】母语权威同行评审期刊的标准学术定名规范与语法体系，自主推导对应学术专有名词，严禁夹杂中文字符或非目标语言专名。`;
     }
 
-    prompt += `\n\n【用户划词选中文本】:\n${maskedText}`;
-    prompt += `\n\n【划词所在上下文语境 (仅供消歧理解，严禁翻译整个语境)】:\n${context}`;
+    const userPrompt = `【划词选中文本】:\n${maskedText}\n\n【划词所在上下文语境 (仅供消歧理解，严禁翻译整个语境)】:\n${context}`;
+    return {
+      systemPrompt: sysPrompt,
+      userPrompt,
+      messages: [
+        { role: 'system', content: sysPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      geminiPrompt: `${sysPrompt}\n\n${userPrompt}\n\n请直接输出翻译结果，不要包含任何前导词、解释、注脚或标点说明。`
+    };
+  }
+
+  // 常规段落/标题翻译
+  let personaPrefix = '你是一个专业的高级学术与通用翻译官。';
+  if (customPersonaPrompts && customPersonaPrompts[activePersona]) {
+    personaPrefix = customPersonaPrompts[activePersona] + '\n';
+  } else if (isTargetChinese) {
+    if (activePersona === 'biochem') {
+      personaPrefix = '你是一名国际顶级期刊 (如 Nature Chemical Biology, JACS, Cell) 的资深学术评审专家兼资深生化与分子生物学文献翻译家。严格遵循《中国化学会命名原则》与《生物化学名词》标准。';
+    } else if (activePersona === 'economics') {
+      personaPrefix = '你是一名国际顶级经济学与金融学期刊 (如 AER, JPE, QJE, JF) 的资深学术评审专家兼金融翻译家。严格遵循经典经济学与金融工程规范审定名词。';
+    }
   } else {
-    let personaPrefix = '你是一个专业的学术与通用翻译官。';
-    if (customPersonaPrompts && customPersonaPrompts[activePersona]) {
-      personaPrefix = customPersonaPrompts[activePersona] + '\n';
-    } else if (isChineseLang(targetLang)) {
-      if (activePersona === 'biochem') {
-        personaPrefix = '你是一名国际顶级期刊 (如 Nature Chemical Biology, JACS, Cell) 的资深学术评审专家兼资深生化与分子生物学文献翻译家。严格遵循《中国化学会命名原则》与《生物化学名词》标准。';
-      } else if (activePersona === 'economics') {
-        personaPrefix = '你是一名国际顶级经济学与金融学期刊 (如 AER, JPE, QJE, JF) 的资深学术评审专家兼金融翻译家。严格遵循经典经济学与金融工程规范审定名词。';
-      }
-    } else {
-      let personaTitle = '资深国际学术期刊评审专家兼母语级科学翻译家';
-      if (activePersona === 'biochem') personaTitle = '国际顶级期刊 (如 Cell, Nature, JACS) 的生物化学与分子生物学同行评审专家';
-      else if (activePersona === 'economics') personaTitle = '国际顶级期刊 (如 AER, QJE, JF) 的金融与计量经济学资深评审专家';
-      personaPrefix = `你是一名${personaTitle}。请严格遵循【${langName} 本土化学术规范】，自主推导并采用该语言最严谨地道的规范学术定名体系。\n`;
-    }
+    let personaTitle = '资深国际学术期刊评审专家兼母语级科学翻译家';
+    if (activePersona === 'biochem') personaTitle = '国际顶级期刊 (如 Cell, Nature, JACS) 的生物化学与分子生物学同行评审专家';
+    else if (activePersona === 'economics') personaTitle = '国际顶级期刊 (如 AER, QJE, JF) 的金融与计量经济学资深评审专家';
+    personaPrefix = `你是一名${personaTitle}。请严格遵循【${langName} 本土化学术规范】，自主推导并采用该语言最严谨地道的规范学术定名体系。\n`;
+  }
 
-    if (isChineseLang(targetLang)) {
-      const termRule = enableBilingual
-        ? `2. 核心专名双语对照（划词专属）：核心专有名词输出为【中文定名 (英文原文/缩写)】（如“野生型 (wild-type, WT)”），便于查词与溯源。`
-        : `2. 规范学术定名：专有名词直接翻译为规范${langName}学术定名，严禁附加英文括号或备注。`;
+  let sysPrompt = '';
+  if (isTargetChinese) {
+    const termRule = (isSelection && enableBilingual)
+      ? `2. 核心专名双语对照（划词专属）：核心专有名词输出为【中文定名 (英文原文/缩写)】（如“野生型 (wild-type, WT)”），便于查词与溯源。`
+      : `2. 规范学术定名：专有名词直接使用规范中文定名，严禁附加英文括号或备注（保持纯净中文）。`;
 
-      prompt = `${personaPrefix}请将以下文本翻译为${langName}。如果输入内容已经是${langName}，则中英互译。
+    sysPrompt = `${personaPrefix}${sourceLangHint}请将以下文本翻译为指定目标语言【${langName}】。
 强制规则：
+0. 目标语言强制：100% 严格使用【${langName}】，严禁输出其他语种。
 1. 符号与数值保真：5'、3'、λ、ΔG°、ΔTm、数字、SI 单位与 __NUM_0__ 占位符原样保留，严禁汉化、篡改或丢失。
 ${termRule}
 3. 排版结构一致：遇到多行标题（\\n 分隔）保持相同行数与换行；普通正文自然流畅。直接输出翻译结果，无任何多余说明。`;
-    } else {
-      prompt = `${personaPrefix}请将以下文本翻译为指定目标语言【${langName}】。
-严格执行【${langName} 本土化学术规范】：
-0. 目标语言唯一性强制：译文必须 100% 严格且只能使用【${langName}】，绝对严禁输出任何中文字符或其他无关语种！
-1. 本土化学术术语标准：严格遵循【${langName}】母语权威同行评审期刊的标准学术定名体系。由你基于专业学科语境自主推导其在该语种中最严谨地道的规范学术词汇，确保动词变位、格位、性数配合及专业介词搭配完全符合母语学术标准。
-2. 数字与符号保留：所有阿拉伯数字、小数、百分比、指数、统计量（如 15, 0.05, 95%）必须 100% 保持原始阿拉伯数字形态与格式，严禁拼写为单词。
-3. 专用缩写首次出现原则：若专业国际通用缩写需要翻译或音译，仅在段落中首次出现时以半角括号附带原文缩写，后文直接使用标准译名，避免排版溢出。
-4. 标题与段落版式一致性：包含换行符 \\n 的独立标题或条目清单必须严格保持行数与结构完全一致，严禁跨行合并；正文段落保持语义通顺连贯，切勿生硬切碎。
-5. 国际单位与占位符绝对保护：mg, mL, μm, kDa, mol/L, rpm, °C 等 SI 单位保留原始英文字符；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改或丢失。`;
-    }
 
-    if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-      prompt += enableBilingual
-        ? `\n\n【核心学科专有名词强制对齐表 (划词双语对照)】:`
+    if (matchedTerms && matchedTerms.length > 0) {
+      sysPrompt += (isSelection && enableBilingual)
+        ? `\n\n【核心学科专有名词强制对齐表 (双语对照)】:`
         : `\n\n【核心学科专有名词强制对齐表 (纯中文规范定名)】:`;
       matchedTerms.forEach(t => {
-        prompt += '\n' + formatMatchedTermRule(t, enableBilingual);
+        sysPrompt += '\n' + formatMatchedTermRule(t, enableBilingual, isSelection);
       });
     }
-    if (context && context.trim()) {
-      prompt += `\n\n【参考上下文语境 (仅供消除代词与断句歧义，严禁将此部分内容夹带在译文中)】:\n${context}`;
-    }
-    prompt += `\n\n请直接输出翻译结果，不要包含任何前导词、解释、注脚或标点说明。
-待翻译文本如下：
-${maskedText}`;
+  } else {
+    sysPrompt = `${personaPrefix}${sourceLangHint}请将以下文本翻译为指定目标语言【${langName}】。
+严格执行【${langName} 本土化学术规范】：
+0. 目标语言唯一性强制：译文必须 100% 严格且只能使用【${langName}】，绝对严禁输出任何中文字符或其他无关语种！
+1. 本土化学术术语标准：严格遵循【${langName}】母语同行评审期刊的标准学术定名体系，动词变位、格位、性数配合及介词搭配完全符合母语学术标准。
+2. 数字与符号保留：所有阿拉伯数字、小数、百分比、指数、统计量必须 100% 保持原始阿拉伯数字形态与格式。
+3. 专用缩写首次出现原则：若专业国际通用缩写需要翻译，仅在段落中首次出现时以半角括号附带原文缩写，后文直接使用标准译名。
+4. 标题与段落版式一致性：包含换行符 \\n 的独立标题或条目清单必须严格保持行数与结构完全一致，严禁跨行合并。
+5. 国际单位与占位符绝对保护：mg, mL, μm, kDa, mol/L, rpm, °C 等 SI 单位保留原始英文字符；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改或丢失。`;
   }
+
+  let userPrompt = '';
+  if (context && context.trim()) {
+    userPrompt += `【参考上下文语境 (仅供消除代词与断句歧义，严禁将此部分内容夹带在译文中)】:\n${context}\n\n`;
+  }
+  userPrompt += `待翻译文本如下：\n${maskedText}`;
+
+  return {
+    systemPrompt: sysPrompt,
+    userPrompt,
+    messages: [
+      { role: 'system', content: sysPrompt },
+      { role: 'user', content: userPrompt }
+    ],
+    geminiPrompt: `${sysPrompt}\n\n${userPrompt}\n\n请直接输出翻译结果，不要包含任何前导词、解释、注脚或标点说明。`
+  };
+}
+
+// Google Gemini 官方接口翻译 (终身免费额度，支持上下文语境与学科角色术语对齐)
+async function translateGemini(text, targetLang, apiKey, modelName, context = null, persona = DEFAULT_PERSONA, customPersonaPrompts = {}, enableBilingual = true, sourceLang = 'auto') {
+  if (!apiKey) throw new Error('未配置 Gemini API Key，请在设置中配置');
+  const cleanModel = (modelName || 'gemini-2.0-flash').replace(/^models\//, '');
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${apiKey}`;
+  const activePersona = persona || DEFAULT_PERSONA;
+
+  const { maskedText, tokenMap } = maskNumericEntities(text);
+  const fullScanText = (text || '') + (context ? ' ' + context : '');
+  const matchedTerms = matchTerms(fullScanText, 10, activePersona);
+
+  const promptObj = buildTranslationPrompt({
+    maskedText,
+    targetLang,
+    sourceLang,
+    context,
+    persona: activePersona,
+    customPersonaPrompts,
+    enableBilingual,
+    isSelection: true,
+    matchedTerms
+  });
 
   const res = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }]
+      contents: [{ parts: [{ text: promptObj.geminiPrompt }] }]
     })
   }, 20000);
 
@@ -790,16 +867,26 @@ ${maskedText}`;
 }
 
 // OpenAI 兼容 API 翻译 (适用于 智谱 GLM, DeepSeek, OpenRouter, OpenCode, 硅基流动, Groq, 自定义模型等)
-async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, modelName, context = null, persona = 'biochem', customPersonaPrompts = {}, enableBilingual = true) {
+async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, modelName, context = null, persona = DEFAULT_PERSONA, customPersonaPrompts = {}, enableBilingual = true, sourceLang = 'auto') {
   if (!apiKey) throw new Error('该服务未配置 API Key，请在设置中配置');
   if (!endpoint) throw new Error('接口地址未配置');
 
-  const langName = getTargetLangFullName(targetLang, true);
-  
+  const activePersona = persona || DEFAULT_PERSONA;
   const { maskedText, tokenMap } = maskNumericEntities(text);
-  const activePersona = typeof persona === 'string' ? persona : (persona ? 'biochem' : 'general');
   const fullScanText = (text || '') + (context ? ' ' + context : '');
   const matchedTerms = matchTerms(fullScanText, 10, activePersona);
+
+  const promptObj = buildTranslationPrompt({
+    maskedText,
+    targetLang,
+    sourceLang,
+    context,
+    persona: activePersona,
+    customPersonaPrompts,
+    enableBilingual,
+    isSelection: true,
+    matchedTerms
+  });
 
   const headers = {
     'Content-Type': 'application/json',
@@ -808,130 +895,12 @@ async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, mod
     'X-Title': 'Translate FY'
   };
 
-  const isShortTermWithContext = !!(context && context.trim() && text && text.trim().length <= 80 && !text.includes('\n'));
-  let messages = [];
-
-  if (isShortTermWithContext) {
-    let personaRole = '专业的高级学术与通用翻译官';
-    if (activePersona === 'biochem') personaRole = '国际顶级期刊 (如 Cell, Nature, JACS) 的生物化学与分子生物学资深学术专家';
-    else if (activePersona === 'economics') personaRole = '国际顶级期刊 (如 AER, QJE, JF) 的金融与计量经济学资深评审专家';
-
-    let sysPrompt = `你是一名${personaRole}。
-用户在学术文献语境中选中了专业词汇/短语。请结合上下文语境进行专业消歧，严格且只能将其精准翻译为指定目标语言【${langName}】。
-严格执行规则：
-1. 目标语言唯一性强制：翻译结果必须严格使用指定的目标语言【${langName}】，绝对严禁输出任何非指定的目标语种（例如严禁输出韩语、日语等无关语种）！
-2. 专业消歧定名：彻底消除孤立单字多义性（例如生化语境中 expression 翻译为“表达”而非“表情”；caspase 翻译为“半胱天冬酶”；cleaved 翻译为“剪切型/裂解型”；yield 翻译为“产率/收率”）。
-3. 仅翻译所选词汇：绝对严禁翻译或复述上下文语境内容！
-4. 输出简洁无干扰：直接输出最贴合该专业语境的最终译名，不要包含任何前导解释、拼音、注脚或标点说明。`;
-
-    if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-      sysPrompt += enableBilingual
-        ? `\n\n【权威学科审定专有名词定名标准 (划词双语对照)】:`
-        : `\n\n【权威学科审定专有名词定名标准 (纯中文规范定名)】:`;
-      matchedTerms.forEach(t => {
-        sysPrompt += '\n' + formatMatchedTermRule(t, enableBilingual);
-      });
-    } else if (!isChineseLang(targetLang) && !isEnglishLang(targetLang)) {
-      sysPrompt += `\n\n【本土化学术规范强制约束】:
-严格遵循【${langName}】母语权威同行评审期刊的标准学术定名规范与语法体系，自主推导对应学术专有名词，严禁夹杂中文字符或非目标语言专名。`;
-    }
-
-    const userPrompt = `【划词选中文本】:\n${maskedText}\n\n【划词所在上下文语境 (仅供消歧理解，严禁翻译整个语境)】:\n${context}`;
-    messages = [
-      { role: 'system', content: sysPrompt },
-      { role: 'user', content: userPrompt }
-    ];
-  } else {
-    let systemPrompt = '';
-    if (customPersonaPrompts && customPersonaPrompts[activePersona]) {
-      systemPrompt = customPersonaPrompts[activePersona] + `\n\n【核心约束】目标语言强制：必须严格且只能翻译为指定目标语言【${langName}】，绝对严禁输出其他无关语种！`;
-    } else if (isChineseLang(targetLang)) {
-      if (activePersona === 'economics') {
-        const termRule = enableBilingual
-          ? `3. 核心学科专业词汇双语对照标注（划词翻译专属）：专有名词在中文定名后紧跟半角括号备注原文或缩写，方便溯源。`
-          : `3. 规范精炼学术定名：专有名词直接使用规范中文定名，严禁添加任何英文原文或括号备注（保持纯净中文翻译）。`;
-
-        systemPrompt = `你是一名国际顶级经济学与金融学期刊 (如 AER, JPE, QJE, JF) 的资深学术评审专家兼金融翻译家。
-请将待翻译的学术文本精准翻译为指定目标语言【${langName}】。
-严格规范：
-0. 目标语言强制：必须严格且只能翻译为【${langName}】，绝对严禁输出其他无关语种。
-1. 术语权威定名：严格遵循经典经济学与金融工程规范审定名词。
-2. 数字严禁汉化：所有阿拉伯数字、百分比、指数、统计量必须 100% 保持原始阿拉伯数字形态与格式，严禁转写为汉字。
-${termRule}
-4. 特殊符号与希腊字母无损保留：ΔGDP, ΔCPI, β, ε, R² 等经济与计量符号必须原样保留并完整清晰显示。
-5. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，必须严格保持相同行数与换行，严禁跨行合并；若是普通连贯正文段落，保持自然流畅，切勿机械切碎。
-6. 国际单位与占位符保护：USD, bps, %, pt 等保留英文；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改或丢失。
-请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`;
-      } else if (activePersona === 'biochem') {
-        const termRule = enableBilingual
-          ? `3. 核心专名双语对照（划词专属）：核心专有名词输出为【中文定名 (英文原文/缩写)】（如“野生型 (wild-type, WT)”），便于查词与溯源。`
-          : `3. 规范学术定名：专有名词直接使用规范中文定名，严禁附加英文括号或备注（保持纯净中文）。`;
-
-        systemPrompt = `你是一名国际顶级期刊 (Nature/Cell/JACS) 的资深生化与分子生物学文献学术评审与翻译专家。
-请将输入学术文本精准严谨地翻译为指定目标语言【${langName}】，强制遵守：
-0. 目标语言强制：100% 严格使用【${langName}】，严禁输出其他语种。
-1. 术语标准：严格符合《中国化学会命名原则》与《生物化学名词》，严禁字面硬翻标准方法（如 Western blot 译为 免疫印迹法；RT-qPCR 译为 逆转录定量PCR）。
-2. 符号与数值保真：5'、3'、λ、ΔG°、ΔTm、数字、SI 单位与 __NUM_0__ 占位符原样保留，严禁汉化、篡改或退化。
-${termRule}
-4. 排版结构一致：遇到多行标题或清单（\\n 分隔）保持原始换行；普通正文自然流畅。
-直接输出翻译结果，严禁包含任何前导解释、注脚或说明。`;
-      } else {
-        const termRule = enableBilingual
-          ? `2. 核心学科专业词汇双语对照标注（划词翻译专属）：专有名词及专有缩写在中文译名后以半角括号附带原文或缩写，方便查阅。`
-          : `2. 规范精炼学术定名：专有名词及专有缩写直接使用规范中文定名，严禁在译文后附加任何英文原文或括号备注（保持纯净中文翻译）。`;
-
-        systemPrompt = `你是一个专业的高级学术与通用翻译官。请直接将用户输入的文本精准翻译为指定目标语言【${langName}】。
-严格规则：
-0. 目标语言强制：必须严格且只能翻译为【${langName}】，绝对严禁输出其他无关语种。
-1. 数字严禁汉化：所有阿拉伯数字、小数、百分比、科学计数法与范围必须 100% 保持原始阿拉伯数字形态，绝对禁止转写为汉字。
-${termRule}
-3. 特殊符号与数学字母无损保留：λ、5'、3'、→ 等特殊符号完整保留与清晰显示。
-4. 多行标题与自然段落智能区分：遇到包含换行符 \\n 的独立多行标题或条目清单，必须严格保持相同行数与换行，严禁跨行合并；若是普通连贯正文段落，保持自然通顺，切勿机械切碎。
-5. 国际单位与占位符保护：mg, mL, μm, kDa, mol/L, rpm, °C 等 SI 单位保留英文字符；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改或丢失。
-请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`;
-      }
-    } else {
-      let personaTitle = '资深国际学术期刊评审专家与母语级科学翻译家';
-      if (activePersona === 'biochem') personaTitle = '国际顶级期刊 (如 Cell, Nature, JACS) 的生物化学与分子生物学同行评审专家';
-      else if (activePersona === 'economics') personaTitle = '国际顶级期刊 (如 AER, QJE, JF) 的金融与计量经济学资深评审专家';
-
-      systemPrompt = `你是一名${personaTitle}。
-请将待翻译的学术文本精准翻译为指定目标语言【${langName}】。
-严格执行【${langName} 本土化学术规范】：
-0. 目标语言唯一性强制：译文必须 100% 严格且只能使用【${langName}】，绝对严禁输出任何中文字符或其他无关语种！
-1. 本土化学术术语标准：严格遵循【${langName}】母语权威同行评审期刊的标准学术定名体系。由你基于专业学科语境自主推导其在该语种中最严谨地道的规范学术词汇，确保动词变位、格位、性数配合及专业介词搭配完全符合母语学术标准。
-2. 数字与符号保留：所有阿拉伯数字、小数、百分比、指数、统计量（如 15, 0.05, 95%）必须 100% 保持原始阿拉伯数字形态与格式，严禁拼写为单词。
-3. 专用缩写首次出现原则：若专业国际通用缩写需要翻译或音译，仅在段落中首次出现时以半角括号附带原文缩写，后文直接使用标准译名，避免排版溢出。
-4. 标题与段落版式一致性：包含换行符 \\n 的独立标题或条目清单必须严格保持行数与结构完全一致，严禁跨行合并；正文段落保持语义通顺连贯，切勿生硬切碎。
-5. 国际单位与占位符绝对保护：mg, mL, μm, kDa, mol/L, rpm, °C 等 SI 单位保留原始英文字符；形如 __NUM_0__ 的占位符必须原样保留在对应位置，严禁篡改或丢失。
-请直接输出翻译结果，不要包含任何解释、前导词、注脚或说明。`;
-    }
-
-    if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-      systemPrompt += enableBilingual
-        ? `\n\n【本段核心命中学科专有术语强制对齐表 (划词双语对照)】:`
-        : `\n\n【本段核心命中学科专有术语强制对齐表 (纯中文规范定名)】:`;
-      matchedTerms.forEach(t => {
-        systemPrompt += '\n' + formatMatchedTermRule(t, enableBilingual);
-      });
-    }
-
-    if (context && context.trim()) {
-      systemPrompt += `\n\n【参考上下文语境 (仅供消除代词与断句歧义，严禁将此部分内容夹带在译文中)】:\n${context}`;
-    }
-
-    messages = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `将以下文本严格且只能翻译为【${langName}】，严禁输出任何其他语种：\n\n${maskedText}` }
-    ];
-  }
-
   const res = await fetchWithTimeout(endpoint, {
     method: 'POST',
     headers: headers,
     body: JSON.stringify({
       model: modelName,
-      messages: messages,
+      messages: promptObj.messages,
       temperature: 0.2
     })
   }, 25000);
@@ -1412,7 +1381,7 @@ function deriveModelsUrl(endpoint, fallbackUrl) {
 
 // 4. 服务商可用模型获取逻辑
 async function fetchProviderModels(provider, apiKey, customEndpoint) {
-  if (!apiKey) throw new Error('请先输入有效的 API Key');
+  if (!apiKey && provider !== 'ollama') throw new Error('请先输入有效的 API Key');
 
   const defaultHeaders = {
     'Authorization': `Bearer ${apiKey}`,
@@ -1567,7 +1536,7 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
     return list.map(m => typeof m === 'string' ? { id: m, name: m } : { id: m.id, name: m.name || m.id });
   }
 
-  // 9) 通用自定义 OpenAI 兼容接口 / 本地 Ollama
+  // 9) 通用自定义 OpenAI 兼容接口
   if (provider === 'custom') {
     const url = deriveModelsUrl(customEndpoint, '');
     if (!url) throw new Error('请先填写接口地址以获取受支持模型');
@@ -1580,6 +1549,26 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
     const list = data.data || data.models || (Array.isArray(data) ? data : []);
     if (!Array.isArray(list) || list.length === 0) throw new Error('未在端点检测到有效模型列表');
     return list.map(m => typeof m === 'string' ? { id: m, name: m } : { id: m.id, name: m.name || m.id });
+  }
+
+  // 10) 本地 Ollama (免 Key 探测)
+  if (provider === 'ollama') {
+    let host = 'http://localhost:11434';
+    if (customEndpoint && customEndpoint.trim()) {
+      try {
+        const u = new URL(customEndpoint.trim());
+        host = `${u.protocol}//${u.host}`;
+      } catch (e) {}
+    }
+    const res = await fetchWithTimeout(`${host}/api/tags`, {}, 10000);
+    if (!res.ok) throw new Error(`Ollama 请求失败: HTTP ${res.status}`);
+    const data = await res.json();
+    const list = data.models || [];
+    if (!Array.isArray(list) || list.length === 0) throw new Error('Ollama 未返回已安装模型，请先通过 ollama run/pull 拉取模型');
+    return list.map(m => {
+      const name = m.name || m.model || '';
+      return { id: name, name };
+    });
   }
 
   throw new Error('不支持的服务商: ' + provider);
@@ -1707,67 +1696,56 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'translate') {
-    const { text, engine, targetLang, model, context, persona, enableBilingualNotation } = request;
-    const activePersona = persona || 'biochem';
+    const { text, engine, targetLang, sourceLang = 'auto', model, context, persona, enableBilingualNotation } = request;
+    const activePersona = persona || DEFAULT_PERSONA;
     const isBilingual = enableBilingualNotation !== false;
 
     // 如果选中的是单一学术术语且在专业词库中有确定对应定名，优先直接采用权威审定名 (根据开关决定是否输出双语对照形态)
-    if (targetLang === 'zh-CN' && text && text.trim().length <= 50 && !text.includes('\n')) {
+    if (isChineseLang(targetLang) && text && text.trim().length <= 50 && !text.includes('\n')) {
       const cleanKey = text.trim();
       const directMatches = matchTerms(cleanKey, 1, activePersona);
       if (directMatches.length > 0 && directMatches[0].term.toLowerCase() === cleanKey.toLowerCase()) {
         const match = directMatches[0];
         let displayTrans;
         if (!isBilingual) {
-          // 用户关闭了双语备注：仅输出权威中文审定名，不带英文括号
-          displayTrans = match.translation.replace(/\s*\([a-zA-Z0-9\s,\-_/]+\)/g, '').trim();
+          // 用户关闭了双语备注：仅输出纯净权威中文审定名，不带英文括号
+          displayTrans = match.translation;
         } else {
           const abbrPart = match.abbr && !match.term.toLowerCase().includes(match.abbr.toLowerCase()) ? `, ${match.abbr}` : (match.abbr || '');
-          displayTrans = (match.translation.includes('(') || match.translation.includes('（'))
-            ? match.translation
-            : `${match.translation} (${match.term}${abbrPart ? ', ' + abbrPart : ''})`;
+          displayTrans = `${match.translation} (${match.term}${abbrPart ? ', ' + abbrPart : ''})`;
         }
-        sendResponse({ success: true, translation: healAcademicSymbols(displayTrans, activePersona) });
+        sendResponse({
+          success: true,
+          translation: healAcademicSymbols(displayTrans, activePersona),
+          note: match.note || ''
+        });
         return true;
       }
     }
 
     // 读取 API 配置与偏好模型及用户自定义角色提示词
-    chrome.storage.local.get({
-      glmApiKey: '',
-      glmActiveModel: 'glm-4-flash',
-      geminiApiKey: '',
-      geminiActiveModel: 'gemini-2.0-flash',
-      deepseekApiKey: '',
-      deepseekActiveModel: 'deepseek-chat',
-      deeplApiKey: '',
-      deeplEndpoint: '',
-      youdaoAppKey: '',
-      youdaoAppSecret: '',
-      customModels: [],
-      customPersonaPrompts: {}
-    }, (settings) => {
+    chrome.storage.local.get(ENGINE_STORAGE_DEFAULTS, (settings) => {
       let translationPromise;
 
       if (engine === 'google') {
-        translationPromise = translateGoogle(text, targetLang);
+        translationPromise = translateGoogle(text, targetLang, sourceLang);
       } else if (engine === 'bing') {
-        translationPromise = translateBing(text, targetLang);
+        translationPromise = translateBing(text, targetLang, sourceLang);
       } else if (engine === 'deepl') {
-        translationPromise = translateDeepL(text, targetLang, settings.deeplApiKey, settings.deeplEndpoint);
+        translationPromise = translateDeepL(text, targetLang, settings.deeplApiKey, settings.deeplEndpoint, sourceLang);
       } else if (engine === 'glm') {
-        translationPromise = translateOpenAICompatible(text, targetLang, settings.glmApiKey, 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model || settings.glmActiveModel || 'glm-4-flash', context, activePersona, settings.customPersonaPrompts, isBilingual);
+        translationPromise = translateOpenAICompatible(text, targetLang, settings.glmApiKey, 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model || settings.glmActiveModel || 'glm-4-flash', context, activePersona, settings.customPersonaPrompts, isBilingual, sourceLang);
       } else if (engine === 'gemini') {
-        translationPromise = translateGemini(text, targetLang, settings.geminiApiKey, model || settings.geminiActiveModel || 'gemini-2.0-flash', context, activePersona, settings.customPersonaPrompts, isBilingual);
+        translationPromise = translateGemini(text, targetLang, settings.geminiApiKey, model || settings.geminiActiveModel || 'gemini-2.0-flash', context, activePersona, settings.customPersonaPrompts, isBilingual, sourceLang);
       } else if (engine === 'deepseek') {
-        translationPromise = translateOpenAICompatible(text, targetLang, settings.deepseekApiKey, 'https://api.deepseek.com/chat/completions', model || settings.deepseekActiveModel || 'deepseek-chat', context, activePersona, settings.customPersonaPrompts, isBilingual);
+        translationPromise = translateOpenAICompatible(text, targetLang, settings.deepseekApiKey, 'https://api.deepseek.com/chat/completions', model || settings.deepseekActiveModel || 'deepseek-chat', context, activePersona, settings.customPersonaPrompts, isBilingual, sourceLang);
       } else if (engine === 'youdao') {
-        translationPromise = translateYoudao(text, targetLang, settings.youdaoAppKey, settings.youdaoAppSecret);
+        translationPromise = translateYoudao(text, targetLang, settings.youdaoAppKey, settings.youdaoAppSecret, sourceLang);
       } else if (engine && engine.startsWith('custom_')) {
         const customId = engine.substring(7); // "custom_" 长度为 7
-        const customModel = settings.customModels.find(m => m.id === customId);
+        const customModel = (settings.customModels || []).find(m => m.id === customId);
         if (customModel) {
-          translationPromise = translateOpenAICompatible(text, targetLang, customModel.apiKey, customModel.endpoint, customModel.modelName, context, activePersona, settings.customPersonaPrompts, isBilingual);
+          translationPromise = translateOpenAICompatible(text, targetLang, customModel.apiKey, customModel.endpoint, customModel.modelName, context, activePersona, settings.customPersonaPrompts, isBilingual, sourceLang);
         } else {
           translationPromise = Promise.reject(new Error('未找到该自定义模型的配置信息'));
         }
@@ -1788,27 +1766,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'translateBatch') {
-    const { items, engine, targetLang, model, context, isBioChem, persona } = request;
-    const effectivePersona = persona || (isBioChem ? 'biochem' : 'general');
+    const { items, engine, targetLang, sourceLang = 'auto', model, context, isBioChem, persona } = request;
+    const effectivePersona = persona || (isBioChem ? 'biochem' : DEFAULT_PERSONA);
     if (!items || !Array.isArray(items) || items.length === 0) {
       sendResponse({ success: true, translations: [] });
       return false;
     }
 
-    chrome.storage.local.get({
-      glmApiKey: '',
-      glmActiveModel: 'glm-4-flash',
-      geminiApiKey: '',
-      geminiActiveModel: 'gemini-2.0-flash',
-      deepseekApiKey: '',
-      deepseekActiveModel: 'deepseek-chat',
-      deeplApiKey: '',
-      deeplEndpoint: '',
-      youdaoAppKey: '',
-      youdaoAppSecret: '',
-      customModels: [],
-      customPersonaPrompts: {}
-    }, (settings) => {
+    chrome.storage.local.get(ENGINE_STORAGE_DEFAULTS, (settings) => {
       let batchPromise;
 
       if (engine === 'google') {
@@ -1823,7 +1788,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         batchPromise = translateBatchOpenAICompatible(items, targetLang, settings.deepseekApiKey, 'https://api.deepseek.com/chat/completions', model || settings.deepseekActiveModel || 'deepseek-chat', context, effectivePersona, settings.customPersonaPrompts);
       } else if (engine && engine.startsWith('custom_')) {
         const customId = engine.substring(7);
-        const customModel = settings.customModels.find(m => m.id === customId);
+        const customModel = (settings.customModels || []).find(m => m.id === customId);
         if (customModel) {
           batchPromise = translateBatchOpenAICompatible(items, targetLang, customModel.apiKey, customModel.endpoint, customModel.modelName, context, effectivePersona, settings.customPersonaPrompts);
         } else {
@@ -1905,6 +1870,87 @@ async function streamOpenAIEndpoint({ apiKey, endpoint, modelName, messages, tem
   return fullOutput;
 }
 
+// Google Gemini 官方 SSE 流式封装
+async function streamGeminiEndpoint({ apiKey, modelName, prompt, signal, onChunk }) {
+  if (!apiKey) throw new Error('未配置 Gemini API Key，请在设置中配置');
+  const cleanModel = (modelName || 'gemini-2.0-flash').replace(/^models\//, '');
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }]
+    }),
+    signal
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error?.message || `Gemini API 错误: ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let fullOutput = '';
+  let lineBuffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    lineBuffer += decoder.decode(value, { stream: true });
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop();
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data: ')) continue;
+      const jsonStr = trimmed.slice(6).trim();
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const delta = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if (delta) {
+          fullOutput += delta;
+          if (onChunk) onChunk(delta);
+        }
+      } catch (e) {}
+    }
+  }
+
+  return fullOutput;
+}
+
+// 流式占位符防抖还原器：暂存可能未闭合的 __ 前缀，杜绝 chunk 中露出 __NUM_0__ 乱码
+function createStreamTokenUnmasker(tokenMap, onSafeChunk) {
+  let pending = '';
+  return {
+    feed(delta) {
+      pending += delta;
+      // 检查尾部是否包含可能未闭合的占位符前缀 (如 _ 或 __NUM)
+      const partialMatch = pending.match(/_{1,2}[A-Za-z0-9_]*$/);
+      let safeChunk = pending;
+      if (partialMatch) {
+        safeChunk = pending.slice(0, partialMatch.index);
+        pending = pending.slice(partialMatch.index);
+      } else {
+        pending = '';
+      }
+      if (safeChunk) {
+        const unmasked = unmaskNumericEntities(safeChunk, tokenMap);
+        onSafeChunk(unmasked);
+      }
+    },
+    flush() {
+      if (pending) {
+        const unmasked = unmaskNumericEntities(pending, tokenMap);
+        pending = '';
+        onSafeChunk(unmasked);
+      }
+    }
+  };
+}
+
 // 4. 长连接流式通信总线 (Streaming Port Listener)
 chrome.runtime.onConnect.addListener((port) => {
   // 划词浮窗长连接逐字打字机
@@ -1916,108 +1962,130 @@ chrome.runtime.onConnect.addListener((port) => {
     });
 
     port.onMessage.addListener((request) => {
-      const { text, engine, targetLang, model, context, persona, enableBilingualNotation } = request;
-      const activePersona = persona || 'biochem';
+      const { text, engine, targetLang, sourceLang = 'auto', model, context, persona, enableBilingualNotation } = request;
+      const activePersona = persona || DEFAULT_PERSONA;
       const isBilingual = enableBilingualNotation !== false;
 
       port.postMessage({ type: 'start' });
 
-      chrome.storage.local.get({
-        glmApiKey: '',
-        glmActiveModel: 'glm-4-flash',
-        deepseekApiKey: '',
-        deepseekActiveModel: 'deepseek-chat',
-        deeplApiKey: '',
-        deeplEndpoint: '',
-        youdaoAppKey: '',
-        youdaoAppSecret: '',
-        customModels: [],
-        customPersonaPrompts: {}
-      }, async (settings) => {
+      // 单学术术语直接查词快速通道
+      if (isChineseLang(targetLang) && text && text.trim().length <= 50 && !text.includes('\n')) {
+        const cleanKey = text.trim();
+        const directMatches = matchTerms(cleanKey, 1, activePersona);
+        if (directMatches.length > 0 && directMatches[0].term.toLowerCase() === cleanKey.toLowerCase()) {
+          const match = directMatches[0];
+          let displayTrans;
+          if (!isBilingual) {
+            displayTrans = match.translation;
+          } else {
+            const abbrPart = match.abbr && !match.term.toLowerCase().includes(match.abbr.toLowerCase()) ? `, ${match.abbr}` : (match.abbr || '');
+            displayTrans = `${match.translation} (${match.term}${abbrPart ? ', ' + abbrPart : ''})`;
+          }
+          const finalResult = healAcademicSymbols(displayTrans, activePersona);
+          port.postMessage({
+            type: 'done',
+            fullText: finalResult,
+            note: match.note || ''
+          });
+          return;
+        }
+      }
+
+      chrome.storage.local.get(ENGINE_STORAGE_DEFAULTS, async (settings) => {
         try {
           let fullResult = '';
-          const isAIStream = (engine === 'glm' || engine === 'deepseek' || (engine && engine.startsWith('custom_')));
+          const isAIStream = isAIEngineId(engine);
 
           if (isAIStream) {
-            let apiKey = '';
-            let endpoint = '';
-            let modelName = '';
-
-            if (engine === 'glm') {
-              apiKey = settings.glmApiKey;
-              endpoint = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-              modelName = model || settings.glmActiveModel || 'glm-4-flash';
-            } else if (engine === 'deepseek') {
-              apiKey = settings.deepseekApiKey;
-              endpoint = 'https://api.deepseek.com/chat/completions';
-              modelName = model || settings.deepseekActiveModel || 'deepseek-chat';
-            } else if (engine.startsWith('custom_')) {
-              const customId = engine.substring(7);
-              const customModel = settings.customModels.find(m => m.id === customId);
-              if (customModel) {
-                apiKey = customModel.apiKey;
-                endpoint = customModel.endpoint;
-                modelName = customModel.modelName;
-              }
-            }
-
-            if (!apiKey) throw new Error('该 AI 引擎尚未配置 API Key，请在设置中配置');
-            if (!endpoint) throw new Error('接口地址未配置');
-
-            const langName = getTargetLangFullName(targetLang, true);
             const { maskedText, tokenMap } = maskNumericEntities(text);
             const fullScanText = (text || '') + (context ? ' ' + context : '');
             const matchedTerms = matchTerms(fullScanText, 10, activePersona);
 
-            const termRule = isBilingual
-              ? `2. 核心专名双语对照（划词专属）：核心专有名词输出为【中文定名 (英文原文/缩写)】（如“野生型 (wild-type, WT)”），便于查词与溯源。`
-              : `2. 规范学术定名：专有名词直接使用规范中文定名，严禁附加英文括号或备注。`;
-
-            let sysPrompt = `你是一名国际顶级学术期刊的资深学术评审专家兼母语级科学翻译家。请将待翻译文本严格翻译为指定目标语言【${langName}】。
-规则约束：
-0. 目标语言强制：100% 严格使用【${langName}】，严禁输出其他语种。
-1. 符号与数值保真：5'、3'、λ、ΔG°、ΔTm、数字、SI 单位与 __NUM_0__ 占位符必须原样保留，严禁汉化、篡改或丢失。
-${termRule}
-3. 排版结构一致：遇到多行标题保持换行；直接输出翻译结果，严禁包含任何前导解释、注脚或说明。`;
-
-            if (isChineseLang(targetLang) && matchedTerms && matchedTerms.length > 0) {
-              sysPrompt += isBilingual
-                ? `\n\n【核心学科专有名词强制对齐表 (划词双语对照)】:`
-                : `\n\n【核心学科专有名词强制对齐表 (纯中文规范定名)】:`;
-              matchedTerms.forEach(t => {
-                sysPrompt += '\n' + formatMatchedTermRule(t, isBilingual);
-              });
-            }
-
-            const messages = [
-              { role: 'system', content: sysPrompt },
-              { role: 'user', content: `将以下文本精准翻译为【${langName}】：\n\n${maskedText}` }
-            ];
-
-            const rawOutput = await streamOpenAIEndpoint({
-              apiKey,
-              endpoint,
-              modelName,
-              messages,
-              signal: abortController.signal,
-              onChunk: (delta) => {
-                port.postMessage({ type: 'chunk', delta });
-              }
+            const promptObj = buildTranslationPrompt({
+              maskedText,
+              targetLang,
+              sourceLang,
+              context,
+              persona: activePersona,
+              customPersonaPrompts: settings.customPersonaPrompts,
+              enableBilingual: isBilingual,
+              isSelection: true,
+              matchedTerms
             });
 
-            fullResult = healAcademicSymbols(unmaskNumericEntities(rawOutput, tokenMap), activePersona);
-          } else {
-            // 传统免 Key 引擎 (Google / Bing / DeepL / Youdao)
-            if (engine === 'google') {
-              fullResult = await translateGoogle(text, targetLang);
-            } else if (engine === 'bing') {
-              fullResult = await translateBing(text, targetLang);
-            } else if (engine === 'deepl') {
-              fullResult = await translateDeepL(text, targetLang, settings.deeplApiKey, settings.deeplEndpoint);
-            } else if (engine === 'youdao') {
-              fullResult = await translateYoudao(text, targetLang, settings.youdaoAppKey, settings.youdaoAppSecret);
+            // 占位符防抖与安全还原器：确保 chunk 中绝不暴露 __NUM_0__ 乱码
+            const unmasker = createStreamTokenUnmasker(tokenMap, (safeDelta) => {
+              port.postMessage({ type: 'chunk', delta: safeDelta });
+            });
+
+            if (engine === 'gemini') {
+              if (!settings.geminiApiKey) throw new Error('未配置 Gemini API Key，请在设置中配置');
+              const geminiModel = model || settings.geminiActiveModel || 'gemini-2.0-flash';
+              let rawOutput = '';
+              try {
+                rawOutput = await streamGeminiEndpoint({
+                  apiKey: settings.geminiApiKey,
+                  modelName: geminiModel,
+                  prompt: promptObj.geminiPrompt,
+                  signal: abortController.signal,
+                  onChunk: (delta) => unmasker.feed(delta)
+                });
+              } catch (geminiStreamErr) {
+                // 如果 SSE 流式连接受阻，降级调用非流式 translateGemini
+                rawOutput = await translateGemini(text, targetLang, settings.geminiApiKey, geminiModel, context, activePersona, settings.customPersonaPrompts, isBilingual, sourceLang);
+                unmasker.feed(rawOutput);
+              }
+              unmasker.flush();
+              fullResult = healAcademicSymbols(unmaskNumericEntities(rawOutput, tokenMap), activePersona);
             } else {
-              fullResult = await translateGoogle(text, targetLang);
+              let apiKey = '';
+              let endpoint = '';
+              let modelName = '';
+
+              if (engine === 'glm') {
+                apiKey = settings.glmApiKey;
+                endpoint = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+                modelName = model || settings.glmActiveModel || 'glm-4-flash';
+              } else if (engine === 'deepseek') {
+                apiKey = settings.deepseekApiKey;
+                endpoint = 'https://api.deepseek.com/chat/completions';
+                modelName = model || settings.deepseekActiveModel || 'deepseek-chat';
+              } else if (engine && engine.startsWith('custom_')) {
+                const customId = engine.substring(7);
+                const customModel = (settings.customModels || []).find(m => m.id === customId);
+                if (customModel) {
+                  apiKey = customModel.apiKey;
+                  endpoint = customModel.endpoint;
+                  modelName = customModel.modelName;
+                }
+              }
+
+              if (!apiKey) throw new Error(`该 AI 引擎 (${engine}) 尚未配置 API Key，请在设置中配置`);
+              if (!endpoint) throw new Error('接口地址未配置');
+
+              const rawOutput = await streamOpenAIEndpoint({
+                apiKey,
+                endpoint,
+                modelName,
+                messages: promptObj.messages,
+                signal: abortController.signal,
+                onChunk: (delta) => unmasker.feed(delta)
+              });
+              unmasker.flush();
+              fullResult = healAcademicSymbols(unmaskNumericEntities(rawOutput, tokenMap), activePersona);
+            }
+          } else {
+            // 传统免 Key 引擎
+            if (engine === 'google') {
+              fullResult = await translateGoogle(text, targetLang, sourceLang);
+            } else if (engine === 'bing') {
+              fullResult = await translateBing(text, targetLang, sourceLang);
+            } else if (engine === 'deepl') {
+              fullResult = await translateDeepL(text, targetLang, settings.deeplApiKey, settings.deeplEndpoint, sourceLang);
+            } else if (engine === 'youdao') {
+              fullResult = await translateYoudao(text, targetLang, settings.youdaoAppKey, settings.youdaoAppSecret, sourceLang);
+            } else {
+              fullResult = await translateGoogle(text, targetLang, sourceLang);
             }
           }
 
@@ -2044,40 +2112,8 @@ ${termRule}
 
       port.postMessage({ type: 'start' });
 
-      chrome.storage.local.get({
-        glmApiKey: '',
-        glmActiveModel: 'glm-4-flash',
-        deepseekApiKey: '',
-        deepseekActiveModel: 'deepseek-chat',
-        customModels: []
-      }, async (settings) => {
+      chrome.storage.local.get(ENGINE_STORAGE_DEFAULTS, async (settings) => {
         try {
-          let apiKey = settings.glmApiKey || settings.deepseekApiKey;
-          let endpoint = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-          let modelName = model || settings.glmActiveModel || 'glm-4-flash';
-
-          if (engine === 'deepseek') {
-            apiKey = settings.deepseekApiKey;
-            endpoint = 'https://api.deepseek.com/chat/completions';
-            modelName = model || settings.deepseekActiveModel || 'deepseek-chat';
-          } else if (engine && engine.startsWith('custom_')) {
-            const customId = engine.substring(7);
-            const customModel = settings.customModels.find(m => m.id === customId);
-            if (customModel) {
-              apiKey = customModel.apiKey;
-              endpoint = customModel.endpoint;
-              modelName = customModel.modelName;
-            }
-          } else if (settings.glmApiKey) {
-            apiKey = settings.glmApiKey;
-            endpoint = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-            modelName = model || settings.glmActiveModel || 'glm-4-flash';
-          }
-
-          if (!apiKey) {
-            throw new Error('学术论文总结需要 AI 大模型支持，请在设置中配置 智谱 GLM 或 DeepSeek API Key (智谱 GLM-4-Flash 永久免费)');
-          }
-
           const summaryPrompt = `你是一名国际顶级学术期刊 (如 Nature, Science, Cell, IEEE, ACM) 的资深学术主编兼同行评审专家。
 请根据以下从论文中精准抽取的骨干信息（包含标题/摘要、主要章节大纲、以及结论部分），为学术研究者撰写一份高信息密度、逻辑结构严密的【论文核心框架与学术大纲总结】。
 
@@ -2106,6 +2142,55 @@ ${backbone.headSample || ''}
 结论与讨论部分:
 ${backbone.tailSample || ''}
 `;
+
+          let chosenEngine = engine;
+          if (!chosenEngine) {
+            if (settings.glmApiKey) chosenEngine = 'glm';
+            else if (settings.geminiApiKey) chosenEngine = 'gemini';
+            else if (settings.deepseekApiKey) chosenEngine = 'deepseek';
+            else if (settings.customModels && settings.customModels.length > 0) chosenEngine = 'custom_' + settings.customModels[0].id;
+          }
+
+          if (chosenEngine === 'gemini' || (!settings.glmApiKey && !settings.deepseekApiKey && settings.geminiApiKey)) {
+            const geminiModel = model || settings.geminiActiveModel || 'gemini-2.0-flash';
+            const fullResult = await streamGeminiEndpoint({
+              apiKey: settings.geminiApiKey,
+              modelName: geminiModel,
+              prompt: summaryPrompt,
+              signal: abortController.signal,
+              onChunk: (delta) => {
+                port.postMessage({ type: 'chunk', delta });
+              }
+            });
+            port.postMessage({ type: 'done', fullText: fullResult });
+            return;
+          }
+
+          let apiKey = settings.glmApiKey || settings.deepseekApiKey;
+          let endpoint = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+          let modelName = model || settings.glmActiveModel || 'glm-4-flash';
+
+          if (chosenEngine === 'deepseek') {
+            apiKey = settings.deepseekApiKey;
+            endpoint = 'https://api.deepseek.com/chat/completions';
+            modelName = model || settings.deepseekActiveModel || 'deepseek-chat';
+          } else if (chosenEngine && chosenEngine.startsWith('custom_')) {
+            const customId = chosenEngine.substring(7);
+            const customModel = (settings.customModels || []).find(m => m.id === customId);
+            if (customModel) {
+              apiKey = customModel.apiKey;
+              endpoint = customModel.endpoint;
+              modelName = customModel.modelName;
+            }
+          } else if (settings.glmApiKey) {
+            apiKey = settings.glmApiKey;
+            endpoint = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+            modelName = model || settings.glmActiveModel || 'glm-4-flash';
+          }
+
+          if (!apiKey) {
+            throw new Error('学术论文总结需要大模型支持，请在设置中配置 GLM、Gemini 或 DeepSeek API Key');
+          }
 
           const messages = [
             { role: 'system', content: '你是一名专业的顶级学术主编，精通文献精读、要点提炼与框架化输出。' },

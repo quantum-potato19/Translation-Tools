@@ -122,6 +122,11 @@ export function isEngineConfigured(engineId, settings) {
 // 用户自定义术语表存储键与数据结构：[{ term, zh, note?, persona?: 'all'|'general'|'biochem'|'economics' }]
 export const USER_GLOSSARY_KEY = 'userGlossary';
 
+// 兼容别名导出
+export const SUPPORTED_LANGUAGES = LANGUAGES;
+export const DEFAULT_TRANSLATE_ENGINES = ENGINES;
+export const TRANSLATION_PERSONAS = PERSONAS;
+
 // HTML 转义 (所有 innerHTML 拼接动态数据必须经过)
 export function escapeHtml(str) {
   return String(str == null ? '' : str)

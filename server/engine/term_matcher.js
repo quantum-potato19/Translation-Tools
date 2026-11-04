@@ -19,12 +19,72 @@ const personaKeysCache = {
   general: []
 };
 
+function getStem(term) {
+  if (/[bcdfghjklmnpqrstvwxyz]y$/i.test(term)) {
+    return term.slice(0, -1).toLowerCase();
+  }
+  return term.toLowerCase();
+}
+
+function compileTermRegex(term) {
+  const trimmed = term.trim();
+  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = trimmed.match(/^([\s\S]*?)([a-zA-Z]+)$/);
+  let pattern;
+  if (m) {
+    const prefix = m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const word = m[2];
+    let wordPat;
+    if (/[bcdfghjklmnpqrstvwxyz]y$/i.test(word)) {
+      const stem = word.slice(0, -1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      wordPat = `${stem}(?:y|ies)`;
+    } else if (/(?:s|x|z|ch|sh)$/i.test(word)) {
+      wordPat = `${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:es)?`;
+    } else {
+      wordPat = `${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:s)?`;
+    }
+    pattern = prefix + wordPat;
+  } else {
+    pattern = escaped;
+  }
+  return new RegExp(`(?<![A-Za-z0-9])${pattern}(?![A-Za-z0-9])`, 'gi');
+}
+
+function normalizeTermEntry(k, val) {
+  if (typeof val === 'string') {
+    let zh = val.trim();
+    let note = '';
+    let abbr = '';
+    const m = zh.match(/^([\u4e00-\u9fa5\w\s-]+?)\s*[（(]([A-Za-z0-9\s/+-]+)[）)]$/);
+    if (m) {
+      zh = m[1].trim();
+      const paren = m[2].trim();
+      if (/^[A-Z0-9/-]{2,8}$/.test(paren)) {
+        abbr = paren;
+      } else {
+        note = paren;
+      }
+    }
+    return { en: k, zh, note, abbr, category: '自定义/通用' };
+  }
+  if (typeof val === 'object' && val !== null) {
+    return {
+      en: val.en || k,
+      zh: val.zh || val.translation || '',
+      note: val.note || '',
+      abbr: val.abbr || '',
+      category: val.category || '',
+      otherLangs: val.otherLangs || {}
+    };
+  }
+  return { en: k, zh: String(val || ''), note: '', abbr: '', category: '' };
+}
+
 /**
  * 根据指定角色加载并合并权威术语库与用户自定义词库
  * @param {'general' | 'biochem' | 'economics'} persona 学术角色类型
  */
 export function loadAllTerms(persona = 'biochem') {
-  // 默认大众翻译：无预设专业语料库，不加载特定词典
   if (persona === 'general') {
     return {};
   }
@@ -48,7 +108,10 @@ export function loadAllTerms(persona = 'biochem') {
   try {
     if (fs.existsSync(targetFile)) {
       const content = fs.readFileSync(targetFile, 'utf-8');
-      domainTerms = JSON.parse(content).terms || {};
+      const raw = JSON.parse(content).terms || {};
+      for (const [k, v] of Object.entries(raw)) {
+        domainTerms[k] = normalizeTermEntry(k, v);
+      }
     }
   } catch (e) {
     console.warn(`读取 ${fileNameMap[persona]} 异常:`, e.message);
@@ -57,7 +120,10 @@ export function loadAllTerms(persona = 'biochem') {
   try {
     if (fs.existsSync(userPath)) {
       const content = fs.readFileSync(userPath, 'utf-8');
-      userTerms = JSON.parse(content).terms || {};
+      const raw = JSON.parse(content).terms || {};
+      for (const [k, v] of Object.entries(raw)) {
+        userTerms[k] = { ...normalizeTermEntry(k, v), source: 'user' };
+      }
     }
   } catch (e) {
     console.warn('读取 user_glossary.json 异常:', e.message);
@@ -67,59 +133,60 @@ export function loadAllTerms(persona = 'biochem') {
   const merged = { ...domainTerms, ...userTerms };
   personaTermsCache[persona] = merged;
 
-  // 关键优化：按词长从长到短排序，确保长复合词优先命中
-  personaKeysCache[persona] = Object.keys(merged).sort((a, b) => b.length - a.length);
+  // 关键优化：按词长从长到短排序，且记录 stem
+  personaKeysCache[persona] = Object.keys(merged)
+    .sort((a, b) => b.length - a.length)
+    .map(k => ({ term: k, stem: getStem(k) }));
 
   return merged;
 }
 
 /**
- * 扫描输入文本，提取对应学术角色的权威术语清单 (毫秒级极速多模式匹配)
+ * 扫描输入文本，提取对应学术角色的权威术语清单 (毫秒级极速多模式匹配，支持词尾变体与跨区间覆盖去重)
  * @param {string} text 待翻译原英文或段落
  * @param {number} maxHits 最多返回的匹配项
  * @param {'general' | 'biochem' | 'economics'} persona 翻译角色
- * @returns {Array<{ term: string, translation: string, category: string, abbr: string, otherLangs: object }>} 命中的术语清单
+ * @returns {Array<{ term: string, translation: string, note?: string, category: string, abbr: string, otherLangs: object, source: string }>} 命中的术语清单
  */
-export function matchTerms(text, maxHits = 12, persona = 'biochem') {
+export function matchTerms(text, maxHits = 15, persona = 'biochem') {
   if (!text || typeof text !== 'string') return [];
-
-  // 默认通用角色：零语料注入
   if (persona === 'general') return [];
 
   const termsMap = loadAllTerms(persona);
-  const sortedKeys = personaKeysCache[persona];
-  if (!sortedKeys || sortedKeys.length === 0) return [];
+  const sortedKeyItems = personaKeysCache[persona];
+  if (!sortedKeyItems || sortedKeyItems.length === 0) return [];
 
   const lowerText = text.toLowerCase();
   const matched = [];
-  const matchedSet = new Set();
+  const matchedSpans = [];
+  const seenZhs = new Set();
 
-  for (const term of sortedKeys) {
+  for (const { term, stem } of sortedKeyItems) {
     if (matched.length >= maxHits) break;
 
-    // 快速子串判定
-    if (lowerText.includes(term)) {
-      // 单词边界严密校验，避免部分子单词误触
-      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const wordBoundaryRegex = new RegExp(`\\b${escaped}\\b`, 'i');
-      if (wordBoundaryRegex.test(text)) {
-        const val = termsMap[term];
-        const zh = typeof val === 'object' ? (val.zh || val.translation) : val;
-        const en = typeof val === 'object' ? (val.en || term) : term;
-        const category = typeof val === 'object' ? (val.category || '') : '';
-        const abbr = typeof val === 'object' ? (val.abbr || '') : '';
-        const otherLangs = typeof val === 'object' ? (val.otherLangs || {}) : {};
-
-        // 避免重复中文概念重复塞入
-        if (!matchedSet.has(zh)) {
-          matched.push({
-            term: en,
-            translation: zh,
-            category,
-            abbr,
-            otherLangs
-          });
-          matchedSet.add(zh);
+    if (lowerText.includes(stem)) {
+      const re = compileTermRegex(term);
+      let hit;
+      while ((hit = re.exec(text)) !== null) {
+        const start = hit.index;
+        const end = start + hit[0].length;
+        const overlaps = matchedSpans.some(([s, e]) => Math.max(s, start) < Math.min(e, end));
+        if (!overlaps) {
+          const entry = termsMap[term];
+          if (entry && entry.zh && !seenZhs.has(entry.zh)) {
+            matchedSpans.push([start, end]);
+            seenZhs.add(entry.zh);
+            matched.push({
+              term: entry.en || term,
+              translation: entry.zh,
+              note: entry.note || '',
+              category: entry.category || '',
+              abbr: entry.abbr || '',
+              otherLangs: entry.otherLangs || {},
+              source: entry.source || 'builtin'
+            });
+            break;
+          }
         }
       }
     }
@@ -131,7 +198,7 @@ export function matchTerms(text, maxHits = 12, persona = 'biochem') {
 /**
  * 添加新的自定义词条并热保存
  */
-export function addCustomTerm(englishTerm, chineseTranslation, category = '用户自定义/学术前沿') {
+export function addCustomTerm(englishTerm, chineseTranslation, category = '用户自定义/学术前沿', note = '', abbr = '') {
   if (!englishTerm || !chineseTranslation) return false;
   const userPath = path.join(__dirname, '..', 'data', 'user_glossary.json');
 
@@ -147,8 +214,9 @@ export function addCustomTerm(englishTerm, chineseTranslation, category = '用�
   currentData.terms[normKey] = {
     en: englishTerm.trim(),
     zh: chineseTranslation.trim(),
-    category: category,
-    abbr: '',
+    category: category.trim(),
+    note: (note || '').trim(),
+    abbr: (abbr || '').trim(),
     otherLangs: {}
   };
 

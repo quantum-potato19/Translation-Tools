@@ -11,7 +11,7 @@ import { loadAllTerms, addCustomTerm } from './server/engine/term_matcher.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT.trim(), 10) : 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT.trim(), 10) : 3300;
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -27,9 +27,10 @@ const MIME_TYPES = {
 };
 
 // 极简 Google 免费翻译通道
-async function translateWithGoogle(text, targetLang = 'zh-CN') {
+async function translateWithGoogle(text, targetLang = 'zh-CN', sourceLang = 'auto') {
   const encText = encodeURIComponent(text);
-  const reqUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encText}`;
+  const sl = sourceLang && sourceLang !== 'auto' ? sourceLang : 'auto';
+  const reqUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${targetLang}&dt=t&q=${encText}`;
   return new Promise((resolve, reject) => {
     https.get(reqUrl, (res) => {
       let data = '';
@@ -73,7 +74,7 @@ const server = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         const payload = JSON.parse(body);
-        const { text, targetLang = 'zh-CN', persona = 'biochem' } = payload;
+        const { text, targetLang = 'zh-CN', sourceLang = 'auto', persona = 'biochem' } = payload;
         if (!text || typeof text !== 'string') {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'text 不能为空' }));
@@ -89,13 +90,18 @@ const server = http.createServer(async (req, res) => {
             const zh = typeof val === 'object' ? (val.zh || val.translation) : val;
             if (zh) {
               res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ success: true, translation: zh }));
+              res.end(JSON.stringify({
+                success: true,
+                translation: zh,
+                note: typeof val === 'object' ? (val.note || '') : '',
+                abbr: typeof val === 'object' ? (val.abbr || '') : ''
+              }));
               return;
             }
           }
         }
 
-        const trans = await translateWithGoogle(text, targetLang);
+        const trans = await translateWithGoogle(text, targetLang, sourceLang);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, translation: trans }));
       } catch (err) {
@@ -113,7 +119,7 @@ const server = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         const payload = JSON.parse(body);
-        const { items, targetLang = 'zh-CN' } = payload;
+        const { items, targetLang = 'zh-CN', sourceLang = 'auto' } = payload;
         if (!Array.isArray(items)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'items 必须为数组' }));
@@ -124,7 +130,7 @@ const server = http.createServer(async (req, res) => {
         // 并发批处理
         const batchPromises = items.map(async (item) => {
           try {
-            const trans = await translateWithGoogle(item.text, targetLang);
+            const trans = await translateWithGoogle(item.text, targetLang, sourceLang);
             return { id: item.id, text: trans };
           } catch (e) {
             return { id: item.id, text: item.text };
@@ -206,8 +212,8 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       try {
-        const { englishTerm, chineseTranslation, category } = JSON.parse(body);
-        const ok = addCustomTerm(englishTerm, chineseTranslation, category);
+        const { englishTerm, chineseTranslation, category, note, abbr } = JSON.parse(body);
+        const ok = addCustomTerm(englishTerm, chineseTranslation, category, note, abbr);
         if (ok) {
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ success: true, message: `已成功保存词条: ${englishTerm} -> ${chineseTranslation}` }));

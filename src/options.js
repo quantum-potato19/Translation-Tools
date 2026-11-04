@@ -1,4 +1,5 @@
 import { DocStorage, formatBytes, formatTimestamp } from './doc_storage.js';
+import { USER_GLOSSARY_KEY, DEFAULT_PERSONA, escapeHtml } from './shared/constants.js';
 
 document.addEventListener('DOMContentLoaded', () => {
   // 1. 侧边栏 Tab 切换逻辑
@@ -22,16 +23,21 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tabName === 'storage') {
         renderStorageStats();
       }
+      if (tabName === 'glossary') {
+        renderGlossaryList();
+      }
     });
   });
 
   // 2. 绑定通用设置与官方服务 DOM 元素
+  const translationPersona = document.getElementById('translation-persona');
   const enableSelectionTranslate = document.getElementById('enable-selection-translate');
   const autoShowPanel = document.getElementById('auto-show-panel');
   const enableBilingualNotation = document.getElementById('enable-bilingual-notation');
   const triggerMode = document.getElementById('trigger-mode');
   const defaultTargetLang = document.getElementById('default-target-lang');
   const defaultEngine = document.getElementById('default-engine');
+  const saveToast = document.getElementById('save-toast');
   
   // 核心 AI 引擎 (智谱 GLM 永久免费、Google Gemini 终身免费额度、DeepSeek 高性价比)
   const glmApiKey = document.getElementById('glm-api-key');
@@ -78,9 +84,29 @@ document.addEventListener('DOMContentLoaded', () => {
   const modalTestStatus = document.getElementById('modal-test-status');
   const modalSaveBtn = document.getElementById('modal-save-btn');
 
+  // 自定义术语库管理 DOM 元素
+  const glossaryAddTerm = document.getElementById('glossary-add-term');
+  const glossaryAddZh = document.getElementById('glossary-add-zh');
+  const glossaryAddAbbr = document.getElementById('glossary-add-abbr');
+  const glossaryAddNote = document.getElementById('glossary-add-note');
+  const glossaryAddPersona = document.getElementById('glossary-add-persona');
+  const glossaryAddBtn = document.getElementById('glossary-add-btn');
+  const glossarySearch = document.getElementById('glossary-search');
+  const glossaryCount = document.getElementById('glossary-count');
+  const glossaryImportBtn = document.getElementById('glossary-import-btn');
+  const glossaryFileInput = document.getElementById('glossary-file-input');
+  const glossaryExportJsonBtn = document.getElementById('glossary-export-json-btn');
+  const glossaryExportCsvBtn = document.getElementById('glossary-export-csv-btn');
+  const glossaryClearBtn = document.getElementById('glossary-clear-btn');
+  const glossaryListEmpty = document.getElementById('glossary-list-empty');
+  const glossaryTableWrapper = document.getElementById('glossary-table-wrapper');
+  const glossaryTbody = document.getElementById('glossary-tbody');
+
   let customModels = [];
+  let userGlossary = [];
   let modalFetchedModels = []; // 暂存从第三方服务商拉取的模型列表 [{ id, name }]
   let selectedModelMap = new Map(); // 用户主动选择的模型集合 Map(id => { id, name })
+  let saveToastTimer = null;
 
   // 常用服务商模板预设
   const PROVIDER_TEMPLATES = {
@@ -153,9 +179,14 @@ document.addEventListener('DOMContentLoaded', () => {
       triggerMode: 'direct',
       defaultTargetLang: 'zh-CN',
       defaultEngine: 'google',
+      translationPersona: DEFAULT_PERSONA,
       glmApiKey: '',
       glmActiveModel: 'glm-4-flash',
       glmModels: DEFAULT_MODELS.glm,
+      geminiApiKey: '',
+      geminiActiveModel: 'gemini-2.5-flash',
+      deepseekApiKey: '',
+      deepseekActiveModel: 'deepseek-chat',
       deeplApiKey: '',
       deeplEndpoint: '',
       youdaoAppKey: '',
@@ -164,6 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
       pdfContextMenu: true,
       customModels: []
     }, (settings) => {
+      if (translationPersona) translationPersona.value = settings.translationPersona || DEFAULT_PERSONA;
       if (enableSelectionTranslate) enableSelectionTranslate.checked = settings.enableSelectionTranslate;
       if (autoShowPanel) autoShowPanel.checked = settings.autoShowPanel;
       if (enableBilingualNotation) enableBilingualNotation.checked = (settings.enableBilingualNotation !== false);
@@ -171,6 +203,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (defaultTargetLang) defaultTargetLang.value = settings.defaultTargetLang;
       
       if (glmApiKey) glmApiKey.value = settings.glmApiKey || '';
+      if (geminiApiKey) geminiApiKey.value = settings.geminiApiKey || '';
+      if (geminiModel) geminiModel.value = settings.geminiActiveModel || 'gemini-2.5-flash';
+      if (deepseekApiKey) deepseekApiKey.value = settings.deepseekApiKey || '';
+      if (deepseekModel) deepseekModel.value = settings.deepseekActiveModel || 'deepseek-chat';
       if (deeplApiKey) deeplApiKey.value = settings.deeplApiKey || '';
       if (deeplEndpoint) deeplEndpoint.value = settings.deeplEndpoint || '';
       if (youdaoAppKey) youdaoAppKey.value = settings.youdaoAppKey || '';
@@ -181,6 +217,7 @@ document.addEventListener('DOMContentLoaded', () => {
       customModels = settings.customModels || [];
 
       checkFileSchemeAccess();
+      loadUserGlossary();
 
       // 初始化智谱 GLM 模型状态
       ['glm'].forEach(p => {
@@ -445,6 +482,15 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  function showSaveToast() {
+    if (!saveToast) return;
+    saveToast.classList.remove('hidden');
+    clearTimeout(saveToastTimer);
+    saveToastTimer = setTimeout(() => {
+      saveToast.classList.add('hidden');
+    }, 1500);
+  }
+
   // 4. 配置自动保存逻辑
   function saveSettings() {
     chrome.storage.local.set({
@@ -454,14 +500,22 @@ document.addEventListener('DOMContentLoaded', () => {
       triggerMode: triggerMode ? triggerMode.value : 'direct',
       defaultTargetLang: defaultTargetLang.value,
       defaultEngine: defaultEngine.value,
+      translationPersona: translationPersona ? translationPersona.value : DEFAULT_PERSONA,
       glmApiKey: glmApiKey ? glmApiKey.value.trim() : '',
       glmActiveModel: glmModel ? glmModel.value : 'glm-4-flash',
+      geminiApiKey: geminiApiKey ? geminiApiKey.value.trim() : '',
+      geminiActiveModel: geminiModel ? geminiModel.value : 'gemini-2.5-flash',
+      deepseekApiKey: deepseekApiKey ? deepseekApiKey.value.trim() : '',
+      deepseekActiveModel: deepseekModel ? deepseekModel.value : 'deepseek-chat',
       deeplApiKey: deeplApiKey ? deeplApiKey.value.trim() : '',
       deeplEndpoint: deeplEndpoint ? deeplEndpoint.value.trim() : '',
       youdaoAppKey: youdaoAppKey ? youdaoAppKey.value.trim() : '',
+      youdaoAppSecret: youdaoAppSecret ? youdaoAppSecret.value.trim() : '',
       pdfAction: pdfAction ? pdfAction.value : 'native',
       pdfActionUserExplicit: true,
       pdfContextMenu: pdfContextMenu ? pdfContextMenu.checked : true
+    }, () => {
+      showSaveToast();
     });
   }
 
@@ -475,6 +529,18 @@ document.addEventListener('DOMContentLoaded', () => {
       { value: 'google', label: 'Google 翻译 (免 Key)' },
       { value: 'bing', label: 'Bing 翻译 (免 Key·微软)' }
     ];
+
+    // Google Gemini
+    if (geminiApiKey && geminiApiKey.value.trim()) {
+      const model = geminiModel ? geminiModel.value : 'gemini-2.5-flash';
+      available.push({ value: 'gemini', label: `Google Gemini (${model})` });
+    }
+
+    // DeepSeek
+    if (deepseekApiKey && deepseekApiKey.value.trim()) {
+      const model = deepseekModel ? deepseekModel.value : 'deepseek-chat';
+      available.push({ value: 'deepseek', label: `DeepSeek (${model})` });
+    }
 
     // DeepL 翻译 (仅在配置了 Auth Key 或 自定义 Endpoint 时显示)
     if ((deeplApiKey && deeplApiKey.value.trim()) || (deeplEndpoint && deeplEndpoint.value.trim())) {
@@ -594,7 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 监听输入并实时保存及动态刷新默认引擎列表
   const inputsToWatch = [
-    enableSelectionTranslate, autoShowPanel, enableBilingualNotation, triggerMode, defaultTargetLang, defaultEngine,
+    translationPersona, enableSelectionTranslate, autoShowPanel, enableBilingualNotation, triggerMode, defaultTargetLang, defaultEngine,
     glmApiKey, glmModel, geminiApiKey, geminiModel, deepseekApiKey, deepseekModel,
     deeplApiKey, deeplEndpoint, youdaoAppKey, youdaoAppSecret, pdfAction
   ].filter(Boolean);
@@ -1021,7 +1087,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const apiKey = modalApiKey.value.trim();
     const endpoint = modalEndpoint.value.trim();
 
-    if (!apiKey) {
+    if (!apiKey && provider !== 'ollama') {
       modalFetchStatus.textContent = '请先输入 API Key 再获取模型';
       modalFetchStatus.className = 'model-status-text error';
       return;
@@ -1262,6 +1328,222 @@ document.addEventListener('DOMContentLoaded', () => {
     jumpToStorageBtn.addEventListener('click', () => {
       const storageTabBtn = document.querySelector('[data-tab="storage"]');
       if (storageTabBtn) storageTabBtn.click();
+    });
+  }
+
+  // 7. 用户自定义科研术语库管理 (User Glossary Management)
+  function loadUserGlossary() {
+    chrome.storage.local.get({ [USER_GLOSSARY_KEY]: [] }, (res) => {
+      userGlossary = Array.isArray(res[USER_GLOSSARY_KEY]) ? res[USER_GLOSSARY_KEY] : [];
+      renderGlossaryList();
+    });
+  }
+
+  function renderGlossaryList() {
+    if (!glossaryTbody) return;
+    const query = (glossarySearch ? glossarySearch.value : '').trim().toLowerCase();
+    const filtered = userGlossary.filter(item => {
+      return (item.term || '').toLowerCase().includes(query) ||
+             (item.zh || '').toLowerCase().includes(query) ||
+             (item.note || '').toLowerCase().includes(query) ||
+             (item.abbr || '').toLowerCase().includes(query);
+    });
+
+    if (glossaryCount) glossaryCount.textContent = userGlossary.length;
+
+    if (filtered.length === 0) {
+      if (glossaryListEmpty) glossaryListEmpty.classList.remove('hidden');
+      if (glossaryTableWrapper) glossaryTableWrapper.classList.add('hidden');
+      glossaryTbody.innerHTML = '';
+      return;
+    }
+
+    if (glossaryListEmpty) glossaryListEmpty.classList.add('hidden');
+    if (glossaryTableWrapper) glossaryTableWrapper.classList.remove('hidden');
+
+    glossaryTbody.innerHTML = '';
+    filtered.forEach((item, idx) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="font-weight:600; color:#1c1c1e;">${escapeHtml(item.term)}</td>
+        <td style="color:#007aff; font-weight:500;">${escapeHtml(item.zh)}</td>
+        <td style="color:#8e8e93; font-family:monospace;">${escapeHtml(item.abbr || '-')}</td>
+        <td style="color:#636366; font-size:12px;">${escapeHtml(item.note || item.category || '-')}</td>
+        <td style="text-align:center;">
+          <button class="doc-del-btn glossary-del-btn" data-index="${idx}">删除</button>
+        </td>
+      `;
+      const delBtn = tr.querySelector('.glossary-del-btn');
+      delBtn.addEventListener('click', () => {
+        const originalIndex = userGlossary.indexOf(item);
+        if (originalIndex >= 0) {
+          userGlossary.splice(originalIndex, 1);
+          chrome.storage.local.set({ [USER_GLOSSARY_KEY]: userGlossary }, () => {
+            renderGlossaryList();
+            showSaveToast();
+          });
+        }
+      });
+      glossaryTbody.appendChild(tr);
+    });
+  }
+
+  if (glossaryAddBtn) {
+    glossaryAddBtn.addEventListener('click', () => {
+      const term = glossaryAddTerm ? glossaryAddTerm.value.trim() : '';
+      const zh = glossaryAddZh ? glossaryAddZh.value.trim() : '';
+      const abbr = glossaryAddAbbr ? glossaryAddAbbr.value.trim() : '';
+      const note = glossaryAddNote ? glossaryAddNote.value.trim() : '';
+      const persona = glossaryAddPersona ? glossaryAddPersona.value : 'all';
+
+      if (!term || !zh) {
+        alert('请输入英文原词与规范中文译名！');
+        return;
+      }
+
+      const existingIdx = userGlossary.findIndex(item => item.term.toLowerCase() === term.toLowerCase());
+      const newEntry = { term, zh, abbr, note, category: '用户自定义', persona };
+      if (existingIdx >= 0) {
+        userGlossary[existingIdx] = newEntry;
+      } else {
+        userGlossary.unshift(newEntry);
+      }
+
+      chrome.storage.local.set({ [USER_GLOSSARY_KEY]: userGlossary }, () => {
+        if (glossaryAddTerm) glossaryAddTerm.value = '';
+        if (glossaryAddZh) glossaryAddZh.value = '';
+        if (glossaryAddAbbr) glossaryAddAbbr.value = '';
+        if (glossaryAddNote) glossaryAddNote.value = '';
+        renderGlossaryList();
+        showSaveToast();
+      });
+    });
+  }
+
+  if (glossarySearch) {
+    glossarySearch.addEventListener('input', () => {
+      renderGlossaryList();
+    });
+  }
+
+  if (glossaryExportJsonBtn) {
+    glossaryExportJsonBtn.addEventListener('click', () => {
+      if (userGlossary.length === 0) return alert('当前自定义术语库为空');
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(userGlossary, null, 2));
+      const a = document.createElement('a');
+      a.setAttribute('href', dataStr);
+      a.setAttribute('download', `user_glossary_${new Date().toISOString().slice(0, 10)}.json`);
+      a.click();
+    });
+  }
+
+  if (glossaryExportCsvBtn) {
+    glossaryExportCsvBtn.addEventListener('click', () => {
+      if (userGlossary.length === 0) return alert('当前自定义术语库为空');
+      let csv = '\uFEFF"Term","Translation","Abbr","Note","Persona"\n';
+      userGlossary.forEach(item => {
+        csv += `"${(item.term || '').replace(/"/g, '""')}","${(item.zh || '').replace(/"/g, '""')}","${(item.abbr || '').replace(/"/g, '""')}","${(item.note || '').replace(/"/g, '""')}","${(item.persona || 'all').replace(/"/g, '""')}"\n`;
+      });
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `user_glossary_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+    });
+  }
+
+  if (glossaryImportBtn && glossaryFileInput) {
+    glossaryImportBtn.addEventListener('click', () => {
+      glossaryFileInput.click();
+    });
+
+    glossaryFileInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const content = evt.target.result;
+          let imported = [];
+          if (file.name.endsWith('.json')) {
+            const parsed = JSON.parse(content);
+            if (Array.isArray(parsed)) {
+              imported = parsed;
+            } else if (parsed && typeof parsed === 'object' && parsed.terms) {
+              imported = Object.entries(parsed.terms).map(([k, v]) => {
+                if (typeof v === 'string') return { term: k, zh: v, abbr: '', note: '' };
+                return { term: v.en || k, zh: v.zh || v.translation || '', abbr: v.abbr || '', note: v.note || '' };
+              });
+            }
+          } else if (file.name.endsWith('.csv')) {
+            const lines = content.split(/\r?\n/).filter(Boolean);
+            const startIdx = lines[0].toLowerCase().includes('term') ? 1 : 0;
+            for (let i = startIdx; i < lines.length; i++) {
+              const cols = lines[i].split(',').map(s => s.replace(/^"|"$/g, '').trim());
+              if (cols[0] && cols[1]) {
+                imported.push({
+                  term: cols[0],
+                  zh: cols[1],
+                  abbr: cols[2] || '',
+                  note: cols[3] || '',
+                  persona: cols[4] || 'all'
+                });
+              }
+            }
+          }
+
+          if (imported.length === 0) {
+            alert('未能从该文件中解析出有效术语条目');
+            return;
+          }
+
+          let addedCount = 0;
+          imported.forEach(entry => {
+            if (entry.term && entry.zh) {
+              const exIdx = userGlossary.findIndex(item => item.term.toLowerCase() === entry.term.trim().toLowerCase());
+              const itemData = {
+                term: entry.term.trim(),
+                zh: entry.zh.trim(),
+                abbr: (entry.abbr || '').trim(),
+                note: (entry.note || '').trim(),
+                category: entry.category || '用户导入',
+                persona: entry.persona || 'all'
+              };
+              if (exIdx >= 0) {
+                userGlossary[exIdx] = itemData;
+              } else {
+                userGlossary.push(itemData);
+                addedCount++;
+              }
+            }
+          });
+
+          chrome.storage.local.set({ [USER_GLOSSARY_KEY]: userGlossary }, () => {
+            renderGlossaryList();
+            showSaveToast();
+            alert(`成功导入 ${imported.length} 条术语 (新增 ${addedCount} 条，更新 ${imported.length - addedCount} 条)`);
+          });
+        } catch (err) {
+          alert('解析导入文件失败: ' + err.message);
+        } finally {
+          glossaryFileInput.value = '';
+        }
+      };
+      reader.readAsText(file, 'utf-8');
+    });
+  }
+
+  if (glossaryClearBtn) {
+    glossaryClearBtn.addEventListener('click', () => {
+      if (confirm('确定要清空全部自定义科研术语吗？此操作不可逆。')) {
+        userGlossary = [];
+        chrome.storage.local.set({ [USER_GLOSSARY_KEY]: [] }, () => {
+          renderGlossaryList();
+          showSaveToast();
+        });
+      }
     });
   }
 

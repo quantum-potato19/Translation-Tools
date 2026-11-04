@@ -1,4 +1,11 @@
-// Content Script for iOS Translate Lite (v2.0)
+// Content Script for iOS Translate Lite (v2.1)
+import {
+  LANGUAGES,
+  DEFAULT_PERSONA,
+  AI_MODELS as CONST_AI_MODELS,
+  detectTtsLang,
+  escapeHtml
+} from './shared/constants.js';
 
 (function () {
   // 清理上一实例（若存在热重载或重新注入情况）
@@ -26,7 +33,7 @@
 
   const shadowRoot = host.attachShadow({ mode: 'open' });
 
-  // 2. 注入 iOS 26 极简玻璃拟态样式
+  // 2. 注入 iOS 26 极简玻璃拟态样式与无障碍、深色模式适配
   const style = document.createElement('style');
   style.textContent = `
     :host {
@@ -36,6 +43,11 @@
 
     .hidden {
       display: none !important;
+    }
+
+    button:focus-visible, select:focus-visible {
+      outline: 2px solid #007aff !important;
+      outline-offset: 1px !important;
     }
 
     /* 悬浮小图标 (品牌 Logo 视觉重构) */
@@ -92,10 +104,10 @@
       min-height: 160px;
       border-radius: 20px;
       border: 1px solid rgba(255, 255, 255, 0.4);
-      background: rgba(255, 255, 255, 0.75);
+      background: rgba(255, 255, 255, 0.82);
       backdrop-filter: blur(20px) saturate(190%);
       -webkit-backdrop-filter: blur(20px) saturate(190%);
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.04), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.04), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
       overflow: hidden;
       display: flex;
       flex-direction: column;
@@ -119,7 +131,7 @@
       bottom: 0;
       width: 10px;
       cursor: ew-resize;
-      z-index: 100;
+      z-index: 10002;
     }
 
     .resize-handle-left {
@@ -130,18 +142,18 @@
       right: 0;
     }
 
-    .panel-resize-handle:hover,
-    .panel-resize-handle.active {
-      background: rgba(0, 122, 255, 0.15);
+    .resize-handle-left:hover,
+    .resize-handle-right:hover {
+      background: rgba(0, 122, 255, 0.08);
     }
 
     /* 面板头部 */
     .panel-header {
-      padding: 12px 16px;
+      padding: 12px 14px 10px 14px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+      border-bottom: 1px solid rgba(0, 0, 0, 0.05);
       cursor: move;
       user-select: none;
     }
@@ -151,16 +163,8 @@
       align-items: center;
       gap: 6px;
       font-weight: 600;
-      font-size: 13px;
-      letter-spacing: -0.2px;
-      color: #3a3a3c;
-    }
-
-    .panel-logo svg {
-      width: 14px;
-      height: 14px;
-      stroke: currentColor;
-      stroke-width: 2.5;
+      font-size: 13.5px;
+      color: #1c1c1e;
     }
 
     .panel-actions {
@@ -169,64 +173,53 @@
       gap: 6px;
     }
 
-    /* 精美 iOS 下拉选择器 */
     .panel-select {
       background: rgba(0, 0, 0, 0.05);
       border: none;
-      outline: none;
-      font-size: 12px;
-      font-weight: 500;
-      padding: 4px 8px;
       border-radius: 8px;
+      padding: 3px 8px;
+      font-size: 11.5px;
       color: #3a3a3c;
+      outline: none;
       cursor: pointer;
-      max-width: 110px;
-      transition: background 0.15s ease;
-    }
-
-    .panel-select:hover {
-      background: rgba(0, 0, 0, 0.08);
+      font-weight: 500;
     }
 
     .panel-close {
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      background: rgba(0, 0, 0, 0.06);
       border: none;
+      background: transparent;
       color: #8e8e93;
+      cursor: pointer;
+      padding: 2px 5px;
+      font-size: 13px;
+      border-radius: 6px;
       display: flex;
       align-items: center;
       justify-content: center;
-      cursor: pointer;
-      font-size: 11px;
-      font-weight: bold;
       transition: background 0.15s ease, color 0.15s ease;
     }
 
     .panel-close:hover {
-      background: rgba(0, 0, 0, 0.12);
-      color: #3a3a3c;
+      background: rgba(0, 0, 0, 0.06);
+      color: #1c1c1e;
     }
 
     .panel-icon-btn {
-      width: 22px;
-      height: 22px;
-      border-radius: 6px;
-      background: rgba(0, 0, 0, 0.05);
       border: none;
+      background: transparent;
       color: #8e8e93;
+      cursor: pointer;
+      padding: 3px;
+      border-radius: 6px;
       display: flex;
       align-items: center;
       justify-content: center;
-      cursor: pointer;
       transition: all 0.15s ease;
-      padding: 0;
     }
 
     .panel-icon-btn:hover {
-      background: rgba(0, 0, 0, 0.1);
-      color: #1c1c1e;
+      background: rgba(0, 0, 0, 0.06);
+      color: #007AFF;
     }
 
     .panel-icon-btn.active {
@@ -257,13 +250,15 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      max-height: min(70vh, 560px);
+      overflow-y: auto;
     }
 
     .panel-source-text {
       color: #8e8e93;
       font-size: 13px;
       line-height: 1.5;
-      max-height: 80px;
+      max-height: 90px;
       overflow-y: auto;
       word-break: break-word;
     }
@@ -282,7 +277,7 @@
     .panel-result {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Times New Roman", "Cambria Math", sans-serif;
       font-size: 14.5px;
-      line-height: 1.5;
+      line-height: 1.55;
       font-weight: 400;
       color: #1c1c1e;
       word-break: break-word;
@@ -368,33 +363,32 @@
 
     .modal-box h3 {
       margin: 0;
-      font-size: 17px;
+      font-size: 16px;
       font-weight: 600;
-      letter-spacing: -0.2px;
-    }
-
-    .modal-desc {
-      font-size: 13px;
-      color: #8e8e93;
-      margin: 0;
-      line-height: 1.4;
     }
 
     .modal-file-info {
       font-size: 12px;
-      font-family: monospace;
-      background: rgba(0, 0, 0, 0.05);
+      color: #007AFF;
+      background: rgba(0, 122, 255, 0.08);
       padding: 6px 10px;
       border-radius: 8px;
       word-break: break-all;
-      color: #555;
+      margin: 0;
+    }
+
+    .modal-desc {
+      font-size: 13px;
+      color: #636366;
+      margin: 0;
+      line-height: 1.4;
     }
 
     .modal-actions {
       display: flex;
       flex-direction: column;
       gap: 8px;
-      margin-top: 8px;
+      margin-top: 6px;
     }
 
     .modal-btn {
@@ -427,6 +421,47 @@
     .modal-btn.primary:hover {
       opacity: 0.95;
     }
+
+    /* 深色模式适配 */
+    @media (prefers-color-scheme: dark) {
+      .ios-panel {
+        background: rgba(30, 30, 32, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #f2f2f7;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+      }
+      .panel-header {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .panel-logo {
+        color: #f2f2f7;
+      }
+      .panel-select {
+        background: rgba(255, 255, 255, 0.1);
+        color: #f2f2f7;
+      }
+      .panel-source-text {
+        color: #98989d;
+      }
+      .panel-result {
+        color: #f2f2f7;
+      }
+      .panel-divider {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .modal-box {
+        background: rgba(35, 35, 38, 0.92);
+        color: #f2f2f7;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+      }
+      .modal-desc {
+        color: #98989d;
+      }
+      .modal-btn {
+        background: rgba(255, 255, 255, 0.08);
+        color: #f2f2f7;
+      }
+    }
   `;
   shadowRoot.appendChild(style);
 
@@ -452,6 +487,7 @@
           <span>翻译</span>
         </div>
         <div class="panel-actions">
+          <select id="panel-target-lang" class="panel-select" style="max-width: 82px;" title="目标语言"></select>
           <select id="panel-engine-select" class="panel-select">
             <option value="google">Google</option>
           </select>
@@ -512,6 +548,7 @@
   // 获取 DOM 引用
   const floatIcon = shadowRoot.getElementById('float-icon');
   const translatePanel = shadowRoot.getElementById('translate-panel');
+  const panelTargetLang = shadowRoot.getElementById('panel-target-lang');
   const panelEngineSelect = shadowRoot.getElementById('panel-engine-select');
   const panelModelSelect = shadowRoot.getElementById('panel-model-select');
   const panelSourceText = shadowRoot.getElementById('panel-source-text');
@@ -534,11 +571,38 @@
   const pdfModalOverlay = shadowRoot.getElementById('pdf-modal-overlay');
 
   let currentSelectedText = '';
+  let currentSelectionContext = '';
   let activePdfLink = '';
   let isDragging = false;
   let isPinned = false;
   let currentStreamPort = null;
   let dragOffset = { x: 0, y: 0 };
+  let cachedPdfAction = 'native';
+
+  // 预热同步缓存 pdfAction
+  chrome.storage.local.get({ pdfAction: 'native' }, (res) => {
+    if (res && res.pdfAction) cachedPdfAction = res.pdfAction;
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.pdfAction) {
+      cachedPdfAction = changes.pdfAction.newValue || 'native';
+    }
+  });
+
+  // 填充面板目标语言下拉
+  if (panelTargetLang) {
+    LANGUAGES.forEach(l => {
+      const opt = document.createElement('option');
+      opt.value = l.code;
+      opt.textContent = l.label;
+      panelTargetLang.appendChild(opt);
+    });
+    panelTargetLang.addEventListener('change', () => {
+      if (currentSelectedText) {
+        doTranslation(currentSelectedText, panelEngineSelect.value, panelTargetLang.value, panelModelSelect.value);
+      }
+    });
+  }
 
   // 浮窗左右拉伸逻辑
   const handleLeft = shadowRoot.querySelector('.resize-handle-left');
@@ -559,23 +623,21 @@
     const startWidth = translatePanel.offsetWidth;
     const startLeft = translatePanel.getBoundingClientRect().left;
 
-    document.body.style.cursor = 'ew-resize';
-    document.body.style.userSelect = 'none';
-    if (direction === 'left' && handleLeft) handleLeft.classList.add('active');
-    if (direction === 'right' && handleRight) handleRight.classList.add('active');
-
     function onMouseMove(moveEvent) {
-      const deltaX = moveEvent.clientX - startX;
-
+      let newWidth = startWidth;
       if (direction === 'right') {
-        const maxW = Math.max(280, window.innerWidth - startLeft - 20);
-        const newWidth = Math.max(280, Math.min(maxW, startWidth + deltaX));
-        translatePanel.style.width = `${newWidth}px`;
-      } else if (direction === 'left') {
-        const newWidth = Math.max(280, startWidth - deltaX);
+        newWidth = startWidth + (moveEvent.clientX - startX);
+      } else {
+        newWidth = startWidth - (moveEvent.clientX - startX);
+      }
+
+      // 限制宽度范围：280px ~ 680px
+      newWidth = Math.max(280, Math.min(680, newWidth));
+      translatePanel.style.width = `${newWidth}px`;
+
+      if (direction === 'left') {
         const newLeft = startLeft + (startWidth - newWidth);
-        if (newLeft >= 10) {
-          translatePanel.style.width = `${newWidth}px`;
+        if (newLeft >= 5) {
           translatePanel.style.left = `${newLeft}px`;
         }
       }
@@ -585,22 +647,18 @@
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (handleLeft) handleLeft.classList.remove('active');
-      if (handleRight) handleRight.classList.remove('active');
-
-      const finalWidth = translatePanel.offsetWidth;
-      chrome.storage.local.set({ contentPanelWidth: finalWidth });
+      chrome.storage.local.set({ contentPanelWidth: translatePanel.offsetWidth });
     }
 
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
+    document.body.style.cursor = 'ew-resize';
   }
 
   if (handleLeft) handleLeft.addEventListener('mousedown', (e) => initResize(e, 'left'));
   if (handleRight) handleRight.addEventListener('mousedown', (e) => initResize(e, 'right'));
 
-  // 网页文本语义段落重构与断行清洗函数
+  // 网页文本语义段落重构与断行清洗函数 (保留专业复合词连字符)
   function reconstructParagraphs(rawText) {
     if (!rawText || typeof rawText !== 'string') return '';
     let text = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -619,10 +677,20 @@
           merged += '\n' + currLine;
           continue;
         }
+
+        // 连字符断行智能修复：若为合法学术复合词前缀（wild-, anti-, non-, state-），保留连字符；若为单纯拆字断行，合并为一个单词
         if (/([a-zA-Z]+)-$/.test(prevLine) && /^[a-zA-Z]/.test(currLine)) {
-          merged = merged.slice(0, -1) + currLine;
+          const prefixMatch = prevLine.match(/([a-zA-Z]+)-$/);
+          const prefix = prefixMatch ? prefixMatch[1].toLowerCase() : '';
+          const knownCompounds = new Set(['self', 'non', 'co', 'anti', 'pre', 'post', 're', 'cross', 'multi', 'sub', 'inter', 'intra', 'wild', 'single', 'state', 'cell', 'binding', 'site', 'in']);
+          if (knownCompounds.has(prefix)) {
+            merged += currLine; // merged 已以 '-' 结尾，直接拼接保留连字符
+          } else {
+            merged = merged.slice(0, -1) + currLine; // 剥除断词连字符
+          }
           continue;
         }
+
         const prevEndsCJK = /[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]$/.test(merged);
         const currStartsCJK = /^[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(currLine);
         if (prevEndsCJK && currStartsCJK) {
@@ -636,27 +704,22 @@
     return cleanParagraphs.filter(Boolean).join('\n\n');
   }
 
-  // AI 模型内置字典 (智谱 GLM 4/4.5/4.7 Flash 官方模型永久免费)
-  const AI_MODELS = {
-    glm: [
-      'glm-4-flash',
-      'glm-4.5-flash',
-      'glm-4.7-flash',
-      'glm-4-flashx'
-    ]
-  };
+  // AI 模型字典
+  const AI_MODELS = { ...CONST_AI_MODELS };
 
   // 4. 动态加载可用引擎列表
   function loadAvailableEngines(callback) {
     chrome.storage.local.get({
       glmApiKey: '',
       glmModels: null,
+      geminiApiKey: '',
+      deepseekApiKey: '',
       deeplApiKey: '',
+      deeplEndpoint: '',
       youdaoAppKey: '',
       youdaoAppSecret: '',
       customModels: []
     }, (result) => {
-      // 动态载入用户在设置中启用的模型列表
       if (Array.isArray(result.glmModels) && result.glmModels.length > 0) AI_MODELS.glm = result.glmModels;
 
       const currentVal = panelEngineSelect.value;
@@ -667,17 +730,23 @@
         { value: 'bing', label: 'Bing' }
       ];
 
-      if ((result.deeplApiKey && result.deeplApiKey.trim()) || (result.deeplEndpoint && result.deeplEndpoint.trim())) {
-        available.push({ value: 'deepl', label: 'DeepL' });
+      if (result.geminiApiKey && result.geminiApiKey.trim()) {
+        available.push({ value: 'gemini', label: 'Google Gemini' });
+      }
+      if (result.deepseekApiKey && result.deepseekApiKey.trim()) {
+        available.push({ value: 'deepseek', label: 'DeepSeek' });
       }
       if (result.glmApiKey && result.glmApiKey.trim()) {
         available.push({ value: 'glm', label: '智谱GLM' });
+      }
+      if ((result.deeplApiKey && result.deeplApiKey.trim()) || (result.deeplEndpoint && result.deeplEndpoint.trim())) {
+        available.push({ value: 'deepl', label: 'DeepL' });
       }
       if (result.youdaoAppKey && result.youdaoAppSecret && result.youdaoAppKey.trim() && result.youdaoAppSecret.trim()) {
         available.push({ value: 'youdao', label: '有道' });
       }
 
-      result.customModels.forEach(m => {
+      (result.customModels || []).forEach(m => {
         if ((m.apiKey && m.apiKey.trim()) || (m.endpoint && m.endpoint.trim())) {
           available.push({ value: `custom_${m.id}`, label: m.name });
         }
@@ -713,61 +782,82 @@
     }
   });
 
-  // 读取偏好设置 (带异常容错降级)
+  // 读取偏好设置
   function getSettings(callback) {
-    try {
-      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.get({
-          enableSelectionTranslate: true,
-          autoShowPanel: false,
-          defaultTargetLang: 'zh-CN',
-          defaultEngine: 'google',
-          triggerMode: 'direct',
-          translationPersona: 'biochem',
-          enableBilingualNotation: true
-        }, (res) => {
-          if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.lastError) {
-            callback({
-              enableSelectionTranslate: true,
-              autoShowPanel: false,
-              defaultTargetLang: 'zh-CN',
-              defaultEngine: 'google',
-              triggerMode: 'direct',
-              translationPersona: 'biochem',
-              enableBilingualNotation: true
-            });
-          } else {
-            callback(res || {
-              enableSelectionTranslate: true,
-              autoShowPanel: false,
-              defaultTargetLang: 'zh-CN',
-              defaultEngine: 'google',
-              triggerMode: 'direct',
-              translationPersona: 'biochem',
-              enableBilingualNotation: true
-            });
-          }
-        });
-        return;
-      }
-    } catch (e) {}
-    callback({
+    chrome.storage.local.get({
       enableSelectionTranslate: true,
       autoShowPanel: false,
       defaultTargetLang: 'zh-CN',
       defaultEngine: 'google',
       triggerMode: 'direct',
-      translationPersona: 'biochem',
+      translationPersona: DEFAULT_PERSONA,
       enableBilingualNotation: true
+    }, (res) => {
+      callback(res || {
+        enableSelectionTranslate: true,
+        autoShowPanel: false,
+        defaultTargetLang: 'zh-CN',
+        defaultEngine: 'google',
+        triggerMode: 'direct',
+        translationPersona: DEFAULT_PERSONA,
+        enableBilingualNotation: true
+      });
     });
   }
 
-  // 5. 网页划词事件监听
-  const handleMouseUp = (e) => {
-    const isClickedInsideHost = e.target === host || (e.composedPath && e.composedPath().includes(host)) || host.contains(e.target);
-    if (isClickedInsideHost) return;
+  // 高保真清洗提取网页选区文本与上下文 (剥离隐藏 MathML，规范上下标 Unicode)
+  function extractCleanSelectedTextAndContext(selection) {
+    if (!selection || selection.rangeCount === 0) return { text: '', context: '' };
+    const range = selection.getRangeAt(0);
 
-    // 输入框、文本域与富文本编辑器防误触抑制
+    const fragment = range.cloneContents();
+    const div = document.createElement('div');
+    div.appendChild(fragment);
+
+    // 清理隐藏或辅助标签
+    div.querySelectorAll('.katex-mathml, mjx-assistive-mml, script, style, noscript, svg, [aria-hidden="true"]').forEach(el => el.remove());
+
+    const SUPERSCRIPTS = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', 'n': 'ⁿ' };
+    const SUBSCRIPTS = { '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉', '+': '₊', '-': '₋', '=': '₌', '(': '₍', ')': '₎' };
+
+    div.querySelectorAll('sup').forEach(el => {
+      const t = el.textContent.trim();
+      if (/^[0-9+\-()n]+$/.test(t)) {
+        el.textContent = t.split('').map(c => SUPERSCRIPTS[c] || c).join('');
+      }
+    });
+    div.querySelectorAll('sub').forEach(el => {
+      const t = el.textContent.trim();
+      if (/^[0-9+\-()]+$/.test(t)) {
+        el.textContent = t.split('').map(c => SUBSCRIPTS[c] || c).join('');
+      }
+    });
+
+    const rawText = (div.innerText || div.textContent || selection.toString()).trim();
+    const text = reconstructParagraphs(rawText);
+
+    let context = '';
+    try {
+      let container = range.commonAncestorContainer;
+      if (container.nodeType === Node.TEXT_NODE) container = container.parentNode;
+      const blockEl = container.closest('p, article, section, blockquote, li, td, div') || container;
+      if (blockEl && blockEl.textContent) {
+        const blockText = blockEl.textContent.trim().replace(/\s+/g, ' ');
+        if (blockText.length > text.length && blockText.length <= 600) {
+          context = blockText;
+        }
+      }
+    } catch (e) {}
+
+    return { text, context };
+  }
+
+  // 鼠标划词监听
+  const handleMouseUp = (e) => {
+    // 忽略 Shadow DOM 自身内部的点击操作
+    if (e.composedPath && e.composedPath().includes(host)) return;
+
+    // 输入框与编辑器抑制
     const isEditable = e.target && (
       e.target.tagName === 'INPUT' ||
       e.target.tagName === 'TEXTAREA' ||
@@ -779,22 +869,23 @@
     setTimeout(() => {
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
-      const rawText = selection.toString().trim();
 
-      if (!rawText || rawText.length < 1 || rawText.length > 2000) {
+      const { text, context } = extractCleanSelectedTextAndContext(selection);
+
+      if (!text || text.length < 1 || text.length > 3000) {
         if (!translatePanel.classList.contains('show')) {
           hideIcon();
         }
         return;
       }
 
-      const text = reconstructParagraphs(rawText);
       currentSelectedText = text;
+      currentSelectionContext = context;
 
       getSettings((settings) => {
         if (!settings.enableSelectionTranslate) return;
 
-        // 快捷键触发控制 (直接 / Alt+划词 / Ctrl+划词)
+        // 快捷键触发控制
         if (settings.triggerMode === 'alt' && !e.altKey) return;
         if (settings.triggerMode === 'ctrl' && !(e.ctrlKey || e.metaKey)) return;
 
@@ -803,7 +894,6 @@
         const rect = range.getBoundingClientRect();
         if (rect.width === 0 && rect.height === 0) return;
 
-        // 由于 host、floatIcon、translatePanel 均为 fixed 定位，直接使用视口客户区坐标
         const posX = rect.right + 6;
         const posY = rect.bottom + 6;
 
@@ -813,7 +903,7 @@
           showIcon(posX, posY);
         }
       });
-    }, 20);
+    }, 25);
   };
   document.addEventListener('mouseup', handleMouseUp);
 
@@ -855,13 +945,16 @@
     hideIcon();
     if (window.speechSynthesis) window.speechSynthesis.cancel();
     
-    const panelWidth = translatePanel.offsetWidth || 360;
-    const panelHeight = translatePanel.offsetHeight || 220;
-    const safeX = Math.max(10, Math.min(x, window.innerWidth - panelWidth - 16));
-    const safeY = Math.max(10, Math.min(y, window.innerHeight - panelHeight - 16));
+    // 若面板已处于固定展示状态，保持当前位置不跳动
+    if (!isPinned || !translatePanel.classList.contains('show')) {
+      const panelWidth = translatePanel.offsetWidth || 360;
+      const panelHeight = translatePanel.offsetHeight || 220;
+      const safeX = Math.max(10, Math.min(x, window.innerWidth - panelWidth - 16));
+      const safeY = Math.max(10, Math.min(y, window.innerHeight - panelHeight - 16));
 
-    translatePanel.style.left = `${safeX}px`;
-    translatePanel.style.top = `${safeY}px`;
+      translatePanel.style.left = `${safeX}px`;
+      translatePanel.style.top = `${safeY}px`;
+    }
     
     panelSourceText.textContent = text;
     
@@ -869,6 +962,10 @@
       const availableValues = Array.from(panelEngineSelect.options).map(o => o.value);
       const chosenEngine = availableValues.includes(engine) ? engine : (availableValues[0] || 'google');
       panelEngineSelect.value = chosenEngine;
+
+      if (panelTargetLang && targetLang) {
+        panelTargetLang.value = targetLang;
+      }
       
       // 更新模型二级选择器状态
       updateModelSelect(chosenEngine, () => {
@@ -882,7 +979,8 @@
             panelBilingualBtn.classList.toggle('active', isBilingual);
             panelBilingualBtn.title = isBilingual ? '专有名词双语备注：开启中（点击切换）' : '专有名词双语备注：已关闭（点击切换）';
           }
-          doTranslation(text, chosenEngine, targetLang, activeModel);
+          const chosenTarget = (panelTargetLang && panelTargetLang.value) || targetLang || settings.defaultTargetLang || 'zh-CN';
+          doTranslation(text, chosenEngine, chosenTarget, activeModel);
         });
       });
     });
@@ -907,12 +1005,7 @@
     panelModelSelect.innerHTML = '';
     
     if (AI_MODELS[engine]) {
-      let models = AI_MODELS[engine];
-      // 划词翻译下拉框中：GLM 仅显示免费模型 (flash 免费系列)
-      if (engine === 'glm') {
-        const freeModels = models.filter(m => m.toLowerCase().includes('flash'));
-        models = freeModels.length > 0 ? freeModels : ['glm-4-flash', 'glm-4.5-flash', 'glm-4.7-flash', 'glm-4-flashx'];
-      }
+      const models = AI_MODELS[engine];
 
       models.forEach(m => {
         const opt = document.createElement('option');
@@ -921,7 +1014,6 @@
         panelModelSelect.appendChild(opt);
       });
       
-      // 读取该引擎的已选模型版本
       const storageKey = `${engine}ActiveModel`;
       chrome.storage.local.get([storageKey], (res) => {
         if (res[storageKey] && models.includes(res[storageKey])) {
@@ -938,8 +1030,8 @@
     }
   }
 
-  // 本地生词本与历史持久化存储
-  function saveVocabularyRecord(word, translation, engine, isStarred = false) {
+  // 本地生词本与历史持久化存储 (不覆盖已有星标状态)
+  function saveVocabularyRecord(word, translation, engine, isStarred = null) {
     if (!word || !translation) return;
     chrome.storage.local.get({ vocabularyHistory: [] }, (res) => {
       let list = Array.isArray(res.vocabularyHistory) ? res.vocabularyHistory : [];
@@ -949,7 +1041,9 @@
         list[existingIndex].translation = translation.trim();
         list[existingIndex].engine = engine;
         list[existingIndex].timestamp = Date.now();
-        if (isStarred !== undefined) list[existingIndex].starred = isStarred;
+        if (typeof isStarred === 'boolean') {
+          list[existingIndex].starred = isStarred;
+        }
       } else {
         list.unshift({
           id: Date.now() + '_' + Math.random().toString(36).substr(2, 5),
@@ -957,7 +1051,7 @@
           translation: translation.trim(),
           engine: engine,
           timestamp: Date.now(),
-          starred: !!isStarred,
+          starred: isStarred === true,
           url: window.location.href
         });
         if (list.length > 2000) {
@@ -970,15 +1064,21 @@
     });
   }
 
-  // 发起翻译请求 (支持长连接 SSE 逐字打字机流式输出)
+  // 发起翻译请求 (支持长连接 SSE 逐字打字机流式输出与单词权威定名即时命中)
   function doTranslation(text, engine, targetLang, modelName) {
     if (window.speechSynthesis) window.speechSynthesis.cancel();
-    if (panelStarBtn) {
-      panelStarBtn.classList.remove('active', 'starred');
-      panelStarBtn.style.color = '';
-    }
 
-    // 若上一个流式请求尚未结束，立刻切断中断信号，防止 Token 泄露
+    // 检查历史收藏状态
+    chrome.storage.local.get({ vocabularyHistory: [] }, (res) => {
+      const list = res.vocabularyHistory || [];
+      const existing = list.find(item => item.word.toLowerCase() === text.toLowerCase());
+      const alreadyStarred = Boolean(existing && existing.starred);
+      if (panelStarBtn) {
+        panelStarBtn.classList.toggle('starred', alreadyStarred);
+        panelStarBtn.style.color = alreadyStarred ? '#ff9500' : '';
+      }
+    });
+
     if (currentStreamPort) {
       try { currentStreamPort.disconnect(); } catch (e) {}
       currentStreamPort = null;
@@ -992,17 +1092,20 @@
     let streamedText = '';
 
     getSettings((settings) => {
-      const activePersona = settings.translationPersona || 'biochem';
+      const activePersona = settings.translationPersona || DEFAULT_PERSONA;
       const enableBilingual = settings.enableBilingualNotation !== false;
+
       try {
         currentStreamPort = chrome.runtime.connect({ name: 'translate-stream' });
         currentStreamPort.postMessage({
           text: text,
+          context: currentSelectionContext,
           engine: engine,
           targetLang: targetLang,
           model: modelName,
           persona: activePersona,
-          enableBilingualNotation: enableBilingual
+          enableBilingualNotation: enableBilingual,
+          isSelection: true
         });
 
         currentStreamPort.onMessage.addListener((msg) => {
@@ -1020,7 +1123,7 @@
             panelResultText.classList.remove('hidden');
             const finalText = msg.fullText || streamedText;
             panelResultText.textContent = finalText;
-            saveVocabularyRecord(text, finalText, engine, false);
+            saveVocabularyRecord(text, finalText, engine, null);
             if (currentStreamPort) {
               try { currentStreamPort.disconnect(); } catch (e) {}
               currentStreamPort = null;
@@ -1045,11 +1148,13 @@
         chrome.runtime.sendMessage({
           action: 'translate',
           text: text,
+          context: currentSelectionContext,
           engine: engine,
           targetLang: targetLang,
           model: modelName,
           persona: activePersona,
-          enableBilingualNotation: enableBilingual
+          enableBilingualNotation: enableBilingual,
+          isSelection: true
         }, (response) => {
           panelLoader.classList.add('hidden');
           panelResultText.classList.remove('hidden');
@@ -1063,7 +1168,7 @@
           if (response.success) {
             panelResultText.textContent = response.translation;
             panelResultText.classList.remove('error');
-            saveVocabularyRecord(text, response.translation, engine, false);
+            saveVocabularyRecord(text, response.translation, engine, null);
           } else {
             panelResultText.textContent = `出错: ${response.error}`;
             panelResultText.classList.add('error');
@@ -1109,7 +1214,8 @@
           panelBilingualBtn.title = nextVal ? '专有名词双语备注：开启中（点击切换）' : '专有名词双语备注：已关闭（点击切换）';
           if (currentSelectedText && !translatePanel.classList.contains('hidden')) {
             const activeModel = panelModelSelect ? panelModelSelect.value : '';
-            doTranslation(currentSelectedText, panelEngineSelect.value, settings.defaultTargetLang || 'zh-CN', activeModel);
+            const chosenTarget = (panelTargetLang && panelTargetLang.value) || settings.defaultTargetLang || 'zh-CN';
+            doTranslation(currentSelectedText, panelEngineSelect.value, chosenTarget, activeModel);
           }
         });
       });
@@ -1117,11 +1223,11 @@
   }
 
   // TTS 语音朗读
-  function speakText(text) {
+  function speakText(text, langHint = '') {
     if (!text || !window.speechSynthesis) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = /[一-龥]/.test(text) ? 'zh-CN' : 'en-US';
+    utterance.lang = detectTtsLang(text, langHint);
     window.speechSynthesis.speak(utterance);
   }
 
@@ -1132,7 +1238,8 @@
 
   speakResBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    speakText(panelResultText.textContent);
+    const chosenTarget = (panelTargetLang && panelTargetLang.value) || 'zh-CN';
+    speakText(panelResultText.textContent, chosenTarget);
   });
 
   // 复制译文
@@ -1168,7 +1275,8 @@
     const engine = panelEngineSelect.value;
     updateModelSelect(engine, () => {
       getSettings((settings) => {
-        doTranslation(currentSelectedText, engine, settings.defaultTargetLang, panelModelSelect.value);
+        const chosenTarget = (panelTargetLang && panelTargetLang.value) || settings.defaultTargetLang;
+        doTranslation(currentSelectedText, engine, chosenTarget, panelModelSelect.value);
       });
     });
   });
@@ -1183,7 +1291,8 @@
     chrome.storage.local.set({ [storageKey]: model });
 
     getSettings((settings) => {
-      doTranslation(currentSelectedText, engine, settings.defaultTargetLang, model);
+      const chosenTarget = (panelTargetLang && panelTargetLang.value) || settings.defaultTargetLang;
+      doTranslation(currentSelectedText, engine, chosenTarget, model);
     });
   });
 
@@ -1246,7 +1355,7 @@
     } catch (e) {}
   };
 
-  // PDF 链接拦截功能
+  // PDF 链接拦截功能 (同步精确拦截，彻底根除异步 defaultPrevented 失效)
   document.addEventListener('click', (e) => {
     const link = e.target.closest('a');
     if (!link) return;
@@ -1255,19 +1364,16 @@
     if (href) {
       const cleanHref = href.split('?')[0].split('#')[0].toLowerCase();
       if (cleanHref.endsWith('.pdf') || href.toLowerCase().includes('/pdf/')) {
-        chrome.storage.local.get({ pdfAction: 'native' }, (result) => {
-          if (result.pdfAction === 'ask') {
-            e.preventDefault();
-            activePdfLink = href;
-            pdfLinkDisplay.textContent = decodeURIComponent(cleanHref.substring(cleanHref.lastIndexOf('/') + 1) || 'document.pdf');
-            pdfModal.classList.remove('hidden');
-          } else if (result.pdfAction === 'extension') {
-            e.preventDefault();
-            const viewerUrl = chrome.runtime.getURL('pdf_viewer.html') + '?file=' + encodeURIComponent(href);
-            window.open(viewerUrl, '_blank');
-          }
-          // 默认 'native' 模式：不拦截，完全由 Chrome 原生阅读器打开
-        });
+        if (cachedPdfAction === 'ask') {
+          e.preventDefault();
+          activePdfLink = href;
+          pdfLinkDisplay.textContent = decodeURIComponent(cleanHref.substring(cleanHref.lastIndexOf('/') + 1) || 'document.pdf');
+          pdfModal.classList.remove('hidden');
+        } else if (cachedPdfAction === 'extension') {
+          e.preventDefault();
+          const viewerUrl = chrome.runtime.getURL('pdf_viewer.html') + '?file=' + encodeURIComponent(href);
+          window.open(viewerUrl, '_blank');
+        }
       }
     }
   });

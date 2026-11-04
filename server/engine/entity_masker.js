@@ -17,9 +17,11 @@ export function maskNumericEntities(text) {
 
   let result = text;
 
-  // 1. 科学计数法 (如 3.2×10⁻⁵, 1.5x10^-4, 10⁻⁴, 10^-6, 2.5e-5, 4.0E+8)
-  result = result.replace(/\b\d+(?:\.\d+)?\s*[×x*]\s*10[\^⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹\-+\d]+/g, (m) => replaceWithToken(m));
-  result = result.replace(/\b10[\^⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹\-+\d]+/g, (m) => replaceWithToken(m));
+  // 1. 显式科学计数法 (如 3.2×10⁻⁵, 1.5x10^-4, 10^-6, 10⁻⁴, 2.5e-5, 4.0E+8, 杜绝误匹配 100, 1000, 10-fold)
+  result = result.replace(/\b\d+(?:\.\d+)?\s*[×x*]\s*10\^[-+−]?\d+/g, (m) => replaceWithToken(m));
+  result = result.replace(/\b\d+(?:\.\d+)?\s*[×x*]\s*10[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, (m) => replaceWithToken(m));
+  result = result.replace(/\b10\^[-+−]?\d+/g, (m) => replaceWithToken(m));
+  result = result.replace(/\b10[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, (m) => replaceWithToken(m));
   result = result.replace(/\b\d+(?:\.\d+)?[eE][-+]?\d+\b/g, (m) => replaceWithToken(m));
 
   // 2. 负温及带单位取值范围 (如 -20 °C, -80 ℃, -20 °C to -80 °C, 0.05–0.10 μM, ±0.5 mg/L)

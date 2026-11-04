@@ -1,4 +1,12 @@
-// Script for Toolbar Popup (popup.js v2.0)
+// Script for Toolbar Popup (popup.js v2.1)
+import {
+  LANGUAGES,
+  DEFAULT_PERSONA,
+  ENGINE_STORAGE_DEFAULTS,
+  AI_MODELS as CONST_AI_MODELS,
+  detectTtsLang,
+  escapeHtml
+} from './shared/constants.js';
 
 document.addEventListener('DOMContentLoaded', () => {
   const sourceText = document.getElementById('source-text');
@@ -31,6 +39,30 @@ document.addEventListener('DOMContentLoaded', () => {
   const exportVocabCsvBtn = document.getElementById('export-vocab-csv-btn');
   const clearUnstarredBtn = document.getElementById('clear-unstarred-btn');
 
+  let currentRequestId = 0;
+  let debounceTimer;
+
+  const AI_MODELS = { ...CONST_AI_MODELS };
+
+  // 动态填充语言下拉菜单 (支持 16 种国际语言)
+  function populateLanguageSelects() {
+    srcLang.innerHTML = '<option value="auto">自动检测</option>';
+    tgtLang.innerHTML = '';
+
+    LANGUAGES.forEach((l) => {
+      const optSrc = document.createElement('option');
+      optSrc.value = l.code;
+      optSrc.textContent = l.label;
+      srcLang.appendChild(optSrc);
+
+      const optTgt = document.createElement('option');
+      optTgt.value = l.code;
+      optTgt.textContent = l.label;
+      tgtLang.appendChild(optTgt);
+    });
+  }
+  populateLanguageSelects();
+
   // 一键直达本地 PDF 沉浸式翻译 Web 页面
   if (pdfNavBtn) {
     pdfNavBtn.addEventListener('click', () => {
@@ -48,18 +80,6 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
   }
-
-  let debounceTimer;
-
-  // AI 模型内置字典 (智谱 GLM 4/4.5/4.7 Flash 官方模型永久免费)
-  const AI_MODELS = {
-    glm: [
-      'glm-4-flash',
-      'glm-4.5-flash',
-      'glm-4.7-flash',
-      'glm-4-flashx'
-    ]
-  };
 
   // 1. 检测当前活动 Tab 是否为 PDF，如果是，展示原生 PDF 阅读引导
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -130,17 +150,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // 2. 加载可用引擎列表，并初始化配置
   function initializePopup() {
     chrome.storage.local.get({
+      ...ENGINE_STORAGE_DEFAULTS,
       defaultTargetLang: 'zh-CN',
       defaultEngine: 'google',
-      glmApiKey: '',
-      glmModels: null,
-      deeplApiKey: '',
-      youdaoAppKey: '',
-      youdaoAppSecret: '',
+      translationPersona: DEFAULT_PERSONA,
       customModels: []
     }, (result) => {
       // 填充目标语言
-      tgtLang.value = result.defaultTargetLang;
+      if (result.defaultTargetLang) {
+        tgtLang.value = result.defaultTargetLang;
+      }
 
       // 动态载入用户在设置中启用的模型列表
       if (Array.isArray(result.glmModels) && result.glmModels.length > 0) AI_MODELS.glm = result.glmModels;
@@ -152,17 +171,23 @@ document.addEventListener('DOMContentLoaded', () => {
         { value: 'bing', label: 'Bing' }
       ];
 
-      if ((result.deeplApiKey && result.deeplApiKey.trim()) || (result.deeplEndpoint && result.deeplEndpoint.trim())) {
-        available.push({ value: 'deepl', label: 'DeepL' });
+      if (result.geminiApiKey && result.geminiApiKey.trim()) {
+        available.push({ value: 'gemini', label: 'Google Gemini' });
+      }
+      if (result.deepseekApiKey && result.deepseekApiKey.trim()) {
+        available.push({ value: 'deepseek', label: 'DeepSeek' });
       }
       if (result.glmApiKey && result.glmApiKey.trim()) {
         available.push({ value: 'glm', label: '智谱GLM' });
+      }
+      if ((result.deeplApiKey && result.deeplApiKey.trim()) || (result.deeplEndpoint && result.deeplEndpoint.trim())) {
+        available.push({ value: 'deepl', label: 'DeepL' });
       }
       if (result.youdaoAppKey && result.youdaoAppSecret && result.youdaoAppKey.trim() && result.youdaoAppSecret.trim()) {
         available.push({ value: 'youdao', label: '有道' });
       }
 
-      result.customModels.forEach(m => {
+      (result.customModels || []).forEach(m => {
         if ((m.apiKey && m.apiKey.trim()) || (m.endpoint && m.endpoint.trim())) {
           available.push({ value: `custom_${m.id}`, label: m.name });
         }
@@ -205,7 +230,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 func: () => window.getSelection().toString().trim()
               }, (results) => {
                 if (chrome.runtime.lastError) {
-                  // 宿主网页安全策略限制等情况下忽略
                   return;
                 }
                 if (results && results[0]?.result) {
@@ -227,12 +251,7 @@ document.addEventListener('DOMContentLoaded', () => {
     modelSelect.innerHTML = '';
 
     if (AI_MODELS[engine]) {
-      let models = AI_MODELS[engine];
-      // GLM 仅展示免费 Flash 模型
-      if (engine === 'glm') {
-        const freeModels = models.filter(m => m.toLowerCase().includes('flash'));
-        models = freeModels.length > 0 ? freeModels : ['glm-4-flash', 'glm-4.5-flash', 'glm-4.7-flash', 'glm-4-flashx'];
-      }
+      const models = AI_MODELS[engine];
 
       models.forEach(m => {
         const opt = document.createElement('option');
@@ -260,11 +279,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 4. 更新引擎徽章
   function updateEngineBadge() {
-    const selectedText = engineSelect.options[engineSelect.selectedIndex].text;
-    currentEngineBadge.textContent = selectedText;
+    if (engineSelect.selectedIndex >= 0) {
+      const selectedText = engineSelect.options[engineSelect.selectedIndex].text;
+      currentEngineBadge.textContent = selectedText;
+    }
   }
 
-  // 5. 执行翻译请求
+  // 5. 执行翻译请求 (带请求序号卫语句，杜绝异步乱序覆盖)
   function performTranslation() {
     const text = sourceText.value.trim();
     if (!text) {
@@ -278,35 +299,57 @@ document.addEventListener('DOMContentLoaded', () => {
     resultText.classList.remove('result-placeholder');
     loadingSpinner.classList.remove('hidden');
     resultText.textContent = '';
-    if (starBtn) starBtn.classList.remove('starred');
 
+    const requestId = ++currentRequestId;
     const engine = engineSelect.value;
     const target = tgtLang.value;
+    const source = srcLang.value;
     const model = modelSelect.value;
 
-    chrome.runtime.sendMessage({
-      action: 'translate',
-      text: text,
-      engine: engine,
-      targetLang: target,
-      model: model
-    }, (response) => {
-      loadingSpinner.classList.add('hidden');
-
-      if (!response) {
-        resultText.textContent = '翻译出错：未收到后台响应';
-        resultText.style.color = '#ff3b30';
-        return;
+    // 检查该词汇在生词本中是否已被收藏，同步更新星标状态
+    chrome.storage.local.get({ vocabularyHistory: [], translationPersona: DEFAULT_PERSONA }, (res) => {
+      const list = res.vocabularyHistory || [];
+      const existing = list.find(item => item.word.toLowerCase() === text.toLowerCase());
+      const isStarred = Boolean(existing && existing.starred);
+      if (starBtn) {
+        if (isStarred) starBtn.classList.add('starred');
+        else starBtn.classList.remove('starred');
       }
 
-      if (response.success) {
-        resultText.textContent = response.translation;
-        resultText.style.color = '';
-        saveVocabularyRecord(text, response.translation, engine, false);
-      } else {
-        resultText.textContent = `翻译出错：${response.error}`;
-        resultText.style.color = '#ff3b30';
-      }
+      chrome.runtime.sendMessage({
+        action: 'translate',
+        text: text,
+        engine: engine,
+        sourceLang: source,
+        targetLang: target,
+        model: model,
+        persona: res.translationPersona || DEFAULT_PERSONA,
+        enableBilingualNotation: true,
+        isSelection: true
+      }, (response) => {
+        if (requestId !== currentRequestId) return;
+        loadingSpinner.classList.add('hidden');
+
+        if (!response) {
+          resultText.textContent = '翻译出错：未收到后台响应';
+          resultText.style.color = '#ff3b30';
+          return;
+        }
+
+        if (response.success) {
+          resultText.style.color = '';
+          const trans = response.translation || '';
+          if (response.note) {
+            resultText.innerHTML = `${escapeHtml(trans)}<div class="term-note" style="margin-top:6px;font-size:11.5px;color:#007aff;opacity:0.85;line-height:1.4;">💡 权威定名备注: ${escapeHtml(response.note)}</div>`;
+          } else {
+            resultText.textContent = trans;
+          }
+          saveVocabularyRecord(text, trans, engine, isStarred);
+        } else {
+          resultText.textContent = `翻译出错：${response.error}`;
+          resultText.style.color = '#ff3b30';
+        }
+      });
     });
   }
 
@@ -323,7 +366,7 @@ document.addEventListener('DOMContentLoaded', () => {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       performTranslation();
-    }, 500);
+    }, 400);
   });
 
   // Shift + Enter 换行，Enter 直接翻译
@@ -342,6 +385,7 @@ document.addEventListener('DOMContentLoaded', () => {
     resultText.textContent = '翻译结果将在此显示...';
     resultText.classList.add('result-placeholder');
     resultText.style.color = '';
+    if (starBtn) starBtn.classList.remove('starred');
     sourceText.focus();
   });
 
@@ -397,27 +441,27 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // TTS 语音朗读
-  function speakText(text) {
+  // TTS 语音朗读 (支持全语种自动精确识别)
+  function speakText(text, langHint = '') {
     if (!text || !window.speechSynthesis) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = /[一-龥]/.test(text) ? 'zh-CN' : 'en-US';
+    utterance.lang = detectTtsLang(text, langHint);
     window.speechSynthesis.speak(utterance);
   }
 
   speakSrcBtn.addEventListener('click', () => {
-    speakText(sourceText.value.trim());
+    speakText(sourceText.value.trim(), srcLang.value);
   });
 
   speakResBtn.addEventListener('click', () => {
     if (!resultText.classList.contains('result-placeholder')) {
-      speakText(resultText.textContent.trim());
+      speakText(resultText.textContent.trim(), tgtLang.value);
     }
   });
 
-  // 本地生词本存储逻辑
-  function saveVocabularyRecord(word, translation, engine, isStarred = false) {
+  // 本地生词本存储逻辑 (不覆盖已有星标状态)
+  function saveVocabularyRecord(word, translation, engine, isStarred = null) {
     if (!word || !translation) return;
     chrome.storage.local.get({ vocabularyHistory: [] }, (res) => {
       let list = Array.isArray(res.vocabularyHistory) ? res.vocabularyHistory : [];
@@ -427,7 +471,9 @@ document.addEventListener('DOMContentLoaded', () => {
         list[existingIndex].translation = translation.trim();
         list[existingIndex].engine = engine;
         list[existingIndex].timestamp = Date.now();
-        if (isStarred !== undefined) list[existingIndex].starred = isStarred;
+        if (typeof isStarred === 'boolean') {
+          list[existingIndex].starred = isStarred;
+        }
       } else {
         list.unshift({
           id: Date.now() + '_' + Math.random().toString(36).substr(2, 5),
@@ -435,7 +481,7 @@ document.addEventListener('DOMContentLoaded', () => {
           translation: translation.trim(),
           engine: engine,
           timestamp: Date.now(),
-          starred: !!isStarred
+          starred: isStarred === true
         });
         if (list.length > 2000) {
           const starred = list.filter(item => item.starred);
@@ -475,8 +521,8 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderVocabDOM() {
     const filterText = (vocabSearchInput.value || '').trim().toLowerCase();
     let displayList = cachedVocabList.filter(item => {
-      const matchWord = item.word.toLowerCase().includes(filterText);
-      const matchTrans = item.translation.toLowerCase().includes(filterText);
+      const matchWord = (item.word || '').toLowerCase().includes(filterText);
+      const matchTrans = (item.translation || '').toLowerCase().includes(filterText);
       const matchTab = vocabCurrentTab === 'all' || (vocabCurrentTab === 'starred' && item.starred);
       return (matchWord || matchTrans) && matchTab;
     });
@@ -497,7 +543,7 @@ document.addEventListener('DOMContentLoaded', () => {
       card.className = 'vocab-item';
       card.innerHTML = `
         <div class="vocab-item-top">
-          <span class="vocab-item-word">${item.word}</span>
+          <span class="vocab-item-word">${escapeHtml(item.word)}</span>
           <div class="vocab-item-actions">
             <button class="vocab-icon-btn star-toggle ${item.starred ? 'starred' : ''}" title="${item.starred ? '取消收藏' : '加入收藏'}">
               <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="${item.starred ? '#ff9500' : 'none'}" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
@@ -507,9 +553,9 @@ document.addEventListener('DOMContentLoaded', () => {
             </button>
           </div>
         </div>
-        <div class="vocab-item-trans">${item.translation}</div>
+        <div class="vocab-item-trans">${escapeHtml(item.translation)}</div>
         <div class="vocab-item-meta">
-          <span>${item.engine || 'google'}</span>
+          <span>${escapeHtml(item.engine || 'google')}</span>
           <span>${formatTime(item.timestamp)}</span>
         </div>
       `;

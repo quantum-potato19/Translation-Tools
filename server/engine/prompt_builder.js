@@ -1,12 +1,32 @@
 // 多角色多学科专家级 Prompt 编排器 (Multi-Persona Domain Prompt Builder)
 
+const LANG_PROMPT_NAMES = {
+  'zh-CN': '中文(学术规范简体)',
+  'zh-TW': '中文(繁体)',
+  'en': '英语 (English)',
+  'ja': '日语 (日本語)',
+  'ko': '韩语 (한국어)',
+  'fr': '法语 (Français)',
+  'de': '德语 (Deutsch)',
+  'es': '西班牙语 (Español)',
+  'ru': '俄语 (Русский)',
+  'it': '意大利语 (Italiano)',
+  'pt': '葡萄牙语 (Português)',
+  'nl': '荷兰语 (Nederlands)',
+  'pl': '波兰语 (Polski)',
+  'ar': '阿拉伯语 (العربية)',
+  'vi': '越南语 (Tiếng Việt)',
+  'th': '泰语 (ไทย)'
+};
+
+function getLangPromptName(code) {
+  return LANG_PROMPT_NAMES[code] || (code ? `语言(${code})` : '目标语言');
+}
+
 function formatMatchedTermRule(t, isSelection = false) {
   const cat = t.category ? ` [${t.category}]` : '';
   const abbrPart = t.abbr && !t.term.toLowerCase().includes(t.abbr.toLowerCase()) ? `, ${t.abbr}` : (t.abbr || '');
   if (t.translation.toLowerCase() === t.term.toLowerCase()) {
-    return `- "${t.term}"${cat} => "${t.translation}"`;
-  }
-  if (t.translation.includes('(') || t.translation.includes('（')) {
     return `- "${t.term}"${cat} => "${t.translation}"`;
   }
   if (isSelection) {
@@ -22,10 +42,12 @@ function formatMatchedTermRule(t, isSelection = false) {
  * @param {string} targetLang 目标语言
  * @param {'general' | 'biochem' | 'economics'} persona 翻译角色
  * @param {boolean} isSelection 是否为划词独立翻译场景 (true 为划词独立双语对照，false 为原排版防溢出)
+ * @param {string} sourceLang 源语言
  * @returns {string} 结构化专家级 System Prompt
  */
-export function buildBioSystemPrompt(matchedTerms = [], targetLang = 'zh-CN', persona = 'biochem', isSelection = false) {
-  const langName = targetLang === 'zh-CN' ? '中文(学术规范简体)' : '目标语言';
+export function buildBioSystemPrompt(matchedTerms = [], targetLang = 'zh-CN', persona = 'biochem', isSelection = false, sourceLang = 'auto') {
+  const langName = getLangPromptName(targetLang);
+  const srcPart = sourceLang && sourceLang !== 'auto' ? `将提供的待翻译 ${sourceLang} ` : '将提供的待翻译';
 
   const termRule = isSelection
     ? `2. 核心学科专业词汇双语对照标注规范（划词翻译专属）：对于关键学术专有名词、核心术语及专业缩写（如本段命中的学科专有名词强制对齐表中的条目，以及单核苷酸变异、野生型、趾步介导的链置换、分子信标、λ-外切核酸酶等核心学术概念），译文必须输出为【中文定名 (英文原文/缩写)】的双语标注形态（例如：'单核苷酸变异 (single nucleotide variant, SNV)'、'野生型 (wild-type, WT)'、'λ-外切核酸酶 (λ-exonuclease)'），在中文定名旁边必须紧随半角圆括号备注其英文原文或缩写，确保学术查阅与原文索引精准对应。`
@@ -47,7 +69,7 @@ ${termRule}
   // 1. 默认通用翻译角色 (大众顺畅阅读，无生硬机器翻译腔)
   if (persona === 'general') {
     return `你是一名资深的多语言翻译专家。
-任务：请将提供的待翻译文本精准、自然、地道地翻译为${langName}。
+任务：请${srcPart}文本精准、自然、地道地翻译为${langName}。
 
 必须遵循以下规范：
 1. 语言自然流畅，通俗易懂，符合大众中文阅读习惯，彻底消除机器翻译腔。
@@ -58,7 +80,7 @@ ${coreTranslationRules}`;
   // 2. 经济学与金融学专家角色 (顶刊 AER/JPE/QJE 级学术规范)
   if (persona === 'economics') {
     let prompt = `你是一名国际顶级经济学与金融学期刊 (如 American Economic Review, Quarterly Journal of Economics, Journal of Finance) 的资深学术评审专家兼资深金融翻译家。
-任务：请将提供的待翻译学术文献精准、严谨、规范地翻译为${langName}。
+任务：请${srcPart}学术文献精准、严谨、规范地翻译为${langName}。
 
 必须严格遵循以下经济与金融学翻译规范：
 1. 术语权威定名：严格遵循经典经济学与金融工程规范审定名词（如 Quantitative Easing 必须译为 量化宽松；Liquidity Trap 译为 流动性陷阱；Phillips Curve 译为 菲利普斯曲线；Deadweight Loss 译为 无谓损失；Nash Equilibrium 译为 纳什均衡）。
@@ -79,7 +101,7 @@ ${coreTranslationRules}`;
 
   // 3. 生化学术专家角色 (顶刊 Nature/Cell/JACS 级生化与分子生物学规范)
   let prompt = `你是一名国际顶级期刊 (Nature/Cell/JACS) 的资深生化与分子生物学文献学术评审与翻译专家。
-任务：请将提供的待翻译学术文献精准严谨地翻译为${langName}。
+任务：请${srcPart}学术文献精准严谨地翻译为${langName}。
 
 学术翻译规范：
 1. 学术用语规范：严格遵循《中国化学会命名原则》与全国科学技术名词审定委员会公布的《生物化学名词》标准。
@@ -107,10 +129,11 @@ ${coreTranslationRules}`;
  * @param {object} crossPageContext 跨页上下文
  * @param {string} targetLang 目标语言
  * @param {'general' | 'biochem' | 'economics'} persona 翻译角色
+ * @param {string} sourceLang 源语言
  * @returns {{ systemPrompt: string, userPrompt: string }}
  */
-export function buildBioBatchPrompt(items, matchedTerms = [], crossPageContext = null, targetLang = 'zh-CN', persona = 'biochem') {
-  let systemPrompt = buildBioSystemPrompt(matchedTerms, targetLang, persona, false);
+export function buildBioBatchPrompt(items, matchedTerms = [], crossPageContext = null, targetLang = 'zh-CN', persona = 'biochem', sourceLang = 'auto') {
+  let systemPrompt = buildBioSystemPrompt(matchedTerms, targetLang, persona, false, sourceLang);
 
   systemPrompt += `\n\n【输出格式契约】
 1. 必须输出且仅输出纯 JSON 数组，格式为 [{"id": 0, "text": "译文"}...]。

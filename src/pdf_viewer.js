@@ -1,6 +1,12 @@
 // PDF Viewer Script (pdf_viewer.js v2.0)
 import * as pdfjsLib from 'pdfjs-dist';
 import { DocStorage, getPdfFingerprint } from './doc_storage.js';
+import {
+  SUPPORTED_LANGUAGES,
+  DEFAULT_TRANSLATE_ENGINES,
+  TRANSLATION_PERSONAS,
+  LOCAL_SERVER_ORIGIN
+} from './shared/constants.js';
 
 // 1. 设置 Worker
 if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
@@ -690,16 +696,41 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // 全局轻量 Toast 弱提醒组件 (统一人性化提示，支持类型与持续时长自适应)
   let toastTimer = null;
-  function showToast(msg, duration = 2200) {
-    const toast = document.getElementById('pdf-toast');
-    if (!toast) return;
-    toast.textContent = msg;
-    toast.classList.remove('hidden');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      toast.classList.add('hidden');
-    }, duration);
+  function showToast(message, typeOrDuration = 'info', duration = 2500) {
+    let type = 'info';
+    let timeout = 2500;
+    if (typeof typeOrDuration === 'number') {
+      timeout = typeOrDuration;
+    } else if (typeof typeOrDuration === 'string') {
+      type = typeOrDuration;
+      if (typeof duration === 'number') timeout = duration;
+    }
+
+    let toast = document.getElementById('pdf-toast-notify');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'pdf-toast-notify';
+      toast.className = 'pdf-toast-notify';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = message;
+    toast.className = `pdf-toast-notify show toast-${type}`;
+    if (toast._timer) clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => {
+      toast.classList.remove('show');
+    }, timeout);
+
+    const legacyToast = document.getElementById('pdf-toast');
+    if (legacyToast) {
+      legacyToast.textContent = message;
+      legacyToast.classList.remove('hidden');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        legacyToast.classList.add('hidden');
+      }, timeout);
+    }
   }
 
   let currentPdf = null;
@@ -709,6 +740,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let pdfFileName = '';
   let currentRenderId = 0;
   let activeTranslateController = null;
+  function createTranslateController() {
+    const ctrl = new AbortController();
+    ctrl.aborted = false;
+    return ctrl;
+  }
   let isTranslatingDoc = false;
   let isPeekingLocked = false;
   const pageTranslations = new Map(); // pageNum -> Array of { id, type, originalText, transText, box }
@@ -800,7 +836,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let isPinned = false;
   let dragOffset = { x: 0, y: 0 };
 
-  // AI 模型内置列表 (智谱 GLM 4/4.5/4.7 Flash 官方模型永久免费，支持 Gemini 与 DeepSeek)
+  // AI 模型内置列表 (智谱 GLM 4/4.5/4.7 Flash 官方模型永久免费，支持 Gemini、DeepSeek 与 Ollama)
   const AI_MODELS = {
     glm: [
       'glm-4-flash',
@@ -816,12 +852,17 @@ document.addEventListener('DOMContentLoaded', () => {
     deepseek: [
       'deepseek-chat',
       'deepseek-reasoner'
+    ],
+    ollama: [
+      'qwen2.5:7b',
+      'llama3.1:8b',
+      'mistral:latest'
     ]
   };
 
   function isAIEngine(engine) {
     if (!engine) return false;
-    return Boolean(AI_MODELS[engine] || engine === 'glm' || engine === 'gemini' || engine === 'deepseek' || engine.startsWith('custom_'));
+    return Boolean(AI_MODELS[engine] || engine === 'glm' || engine === 'gemini' || engine === 'deepseek' || engine === 'ollama' || engine.startsWith('custom_'));
   }
 
   // 多学科/多角色学术论文特殊符号与标点拓扑自愈引擎 (按角色专有生效: biochem/economics/general)
@@ -1160,6 +1201,9 @@ document.addEventListener('DOMContentLoaded', () => {
       deepseekApiKey: '',
       deepseekModels: null,
       deepseekActiveModel: 'deepseek-chat',
+      ollamaEndpoint: '',
+      ollamaModels: null,
+      ollamaActiveModel: 'qwen2.5:7b',
       deeplApiKey: '',
       deeplEndpoint: '',
       youdaoAppKey: '',
@@ -1171,6 +1215,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (Array.isArray(result.glmModels) && result.glmModels.length > 0) AI_MODELS.glm = result.glmModels;
       if (Array.isArray(result.geminiModels) && result.geminiModels.length > 0) AI_MODELS.gemini = result.geminiModels;
       if (Array.isArray(result.deepseekModels) && result.deepseekModels.length > 0) AI_MODELS.deepseek = result.deepseekModels;
+      if (Array.isArray(result.ollamaModels) && result.ollamaModels.length > 0) AI_MODELS.ollama = result.ollamaModels;
 
       const currentPanelVal = panelEngineSelect.value;
       const currentToolbarVal = pdfTranslateEngine ? (pdfTranslateEngine.value || result.pdfTranslateEngine || 'google') : 'google';
@@ -1194,6 +1239,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (result.deepseekApiKey && result.deepseekApiKey.trim()) {
         available.push({ value: 'deepseek', label: 'DeepSeek 翻译 (深度推理)' });
+      }
+      if (result.ollamaEndpoint && result.ollamaEndpoint.trim()) {
+        available.push({ value: 'ollama', label: 'Ollama (本地大模型)' });
       }
       if (result.youdaoAppKey && result.youdaoAppSecret && result.youdaoAppKey.trim() && result.youdaoAppSecret.trim()) {
         available.push({ value: 'youdao', label: '有道词典' });
@@ -1314,22 +1362,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 全局轻量 Toast 弱提醒组件
-  function showToast(message, type = 'info', duration = 3200) {
-    let toast = document.getElementById('pdf-toast-notify');
-    if (!toast) {
-      toast = document.createElement('div');
-      toast.id = 'pdf-toast-notify';
-      toast.className = 'pdf-toast-notify';
-      document.body.appendChild(toast);
-    }
-    toast.textContent = message;
-    toast.className = `pdf-toast-notify show toast-${type}`;
-    if (toast._timer) clearTimeout(toast._timer);
-    toast._timer = setTimeout(() => {
-      toast.classList.remove('show');
-    }, duration);
-  }
+
 
   // 针对译文选区的 iOS 快捷操作浮条 DOM 与交互逻辑
   const transQuickBar = document.createElement('div');
@@ -1419,8 +1452,11 @@ document.addEventListener('DOMContentLoaded', () => {
   quickCopyBilingualBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     let textToCopy = currentTransSelectionText;
-    if (currentTransAssociatedBlock && currentTransAssociatedBlock.origText) {
-      textToCopy = `【原文】\n${currentTransAssociatedBlock.origText}\n\n【译文】\n${currentTransSelectionText}`;
+    const orig = (currentTransAssociatedBlock && (currentTransAssociatedBlock.originalText || currentTransAssociatedBlock.origText))
+      ? (currentTransAssociatedBlock.originalText || currentTransAssociatedBlock.origText)
+      : '';
+    if (orig) {
+      textToCopy = `【原文】\n${orig}\n\n【译文】\n${currentTransSelectionText}`;
     }
     navigator.clipboard.writeText(textToCopy).then(() => {
       const span = quickCopyBilingualBtn.querySelector('span');
@@ -2374,6 +2410,40 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // 翻页控制器按钮与输入框交互绑定 (< 2 / 118 >)
+  if (prevPageBtn) {
+    prevPageBtn.addEventListener('click', () => {
+      if (currentPage > 1) {
+        scrollToPage(currentPage - 1);
+      }
+    });
+  }
+
+  if (nextPageBtn) {
+    nextPageBtn.addEventListener('click', () => {
+      if (currentPdf && currentPage < currentPdf.numPages) {
+        scrollToPage(currentPage + 1);
+      }
+    });
+  }
+
+  if (pageNumInput) {
+    const handlePageJump = () => {
+      const val = parseInt(pageNumInput.value, 10);
+      if (!isNaN(val) && currentPdf) {
+        scrollToPage(Math.max(1, Math.min(val, currentPdf.numPages)));
+      }
+    };
+    pageNumInput.addEventListener('change', handlePageJump);
+    pageNumInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handlePageJump();
+        pageNumInput.blur();
+      }
+    });
+  }
+
   // 右侧 1:1 对称槽位页面渲染引擎
   let currentTransStageRenderTask = null;
 
@@ -2778,14 +2848,92 @@ document.addEventListener('DOMContentLoaded', () => {
     renderedPages.delete(pageNum);
   }
 
-  // 绑定译文块交互：悬停联动、双击复制、点击对齐左侧原文并弹出光环
+  // 绑定译文块交互：悬停快捷微工具栏、单块重译与行内编辑、双击复制、点击对齐左侧原文
   function bindOverlayBlockInteractions(overlayBlock, block, pageNum, pageHeight, scale) {
+    let microToolbar = null;
+
     overlayBlock.addEventListener('mouseenter', () => {
       overlayBlock.classList.add('highlight-linked');
+      if (!microToolbar && !overlayBlock.isContentEditable) {
+        microToolbar = document.createElement('div');
+        microToolbar.className = 'block-micro-toolbar';
+        microToolbar.innerHTML = `
+          <button type="button" class="block-micro-btn btn-retrans" title="当前语义块重新翻译">🔄 重译</button>
+          <button type="button" class="block-micro-btn btn-edit" title="直接行内编辑译文">✏️ 编辑</button>
+          <button type="button" class="block-micro-btn btn-copy" title="复制双语对照内容">📋 复制</button>
+        `;
+
+        const copyBtn = microToolbar.querySelector('.btn-copy');
+        if (copyBtn) {
+          copyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const text = `【原文】\n${block.originalText}\n\n【译文】\n${block.transText}`;
+            navigator.clipboard.writeText(text).then(() => showToast('✓ 已复制双语内容'));
+          });
+        }
+
+        const editBtn = microToolbar.querySelector('.btn-edit');
+        if (editBtn) {
+          editBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            overlayBlock.contentEditable = 'true';
+            overlayBlock.focus();
+            showToast('已进入编辑模式，修改完毕后点击空白处自动保存');
+            const onBlur = () => {
+              overlayBlock.contentEditable = 'false';
+              overlayBlock.removeEventListener('blur', onBlur);
+              const newText = overlayBlock.innerText.trim();
+              if (newText && newText !== block.transText) {
+                block.transText = newText;
+                if (currentDocId) DocStorage.saveTranslation(currentDocId, pageNum, pageTranslations.get(pageNum));
+                showToast('✓ 译文修改已成功保存');
+              }
+            };
+            overlayBlock.addEventListener('blur', onBlur);
+          });
+        }
+
+        const retransBtn = microToolbar.querySelector('.btn-retrans');
+        if (retransBtn) {
+          retransBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            overlayBlock.classList.add('is-translating');
+            const prevText = overlayBlock.textContent;
+            overlayBlock.textContent = '正在重新翻译...';
+            try {
+              const engine = (pdfTranslateEngine && pdfTranslateEngine.value) ? pdfTranslateEngine.value : 'google';
+              const model = (pdfTranslateModel && !pdfTranslateModel.classList.contains('hidden')) ? pdfTranslateModel.value : '';
+              const targetLang = getActiveTargetLang();
+              const newTrans = await requestTranslation(block.originalText, engine, targetLang, model);
+              if (newTrans) {
+                block.transText = newTrans;
+                overlayBlock.textContent = newTrans;
+                if (currentDocId) DocStorage.saveTranslation(currentDocId, pageNum, pageTranslations.get(pageNum));
+                showToast('✓ 语义段落已重新翻译');
+              } else {
+                overlayBlock.textContent = prevText;
+              }
+            } catch (err) {
+              overlayBlock.textContent = prevText;
+              showToast('❌ 重译失败: ' + err.message);
+            } finally {
+              overlayBlock.classList.remove('is-translating');
+            }
+          });
+        }
+
+        overlayBlock.appendChild(microToolbar);
+      }
     });
+
     overlayBlock.addEventListener('mouseleave', () => {
       overlayBlock.classList.remove('highlight-linked');
+      if (microToolbar && !overlayBlock.isContentEditable) {
+        microToolbar.remove();
+        microToolbar = null;
+      }
     });
+
     overlayBlock.addEventListener('dblclick', (e) => {
       e.stopPropagation();
       navigator.clipboard.writeText(block.transText);
@@ -2794,7 +2942,9 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => { overlayBlock.style.background = originalBg; }, 1000);
       showToast('✓ 译文已复制到剪贴板');
     });
+
     overlayBlock.addEventListener('click', (e) => {
+      if (overlayBlock.isContentEditable) return;
       e.stopPropagation();
       document.querySelectorAll('.highlight-linked').forEach(el => el.classList.remove('highlight-linked'));
       overlayBlock.classList.add('highlight-linked');
@@ -2945,36 +3095,7 @@ document.addEventListener('DOMContentLoaded', () => {
     overlayLayer.innerHTML = '';
     const pageNum = overlayLayer.parentElement ? parseInt(overlayLayer.parentElement.dataset.pageNum, 10) : currentPage;
 
-    // 1. 如果提供了舞台底图 Canvas，先执行无痕底色擦除 (Inpainting)，抹除原版英文，防止透光重叠
-    if (stageCanvas && stageCanvas.getContext && opacityModeIndex !== 2) {
-      const ctx = stageCanvas.getContext('2d');
-      const canvasOutputScale = (stageCanvas.style && stageCanvas.style.width)
-        ? (stageCanvas.width / parseFloat(stageCanvas.style.width))
-        : 1;
-
-      ctx.save();
-      if (canvasOutputScale && canvasOutputScale !== 1) {
-        ctx.scale(canvasOutputScale, canvasOutputScale);
-      }
-
-      blocks.forEach(block => {
-        if (!block.box || block.type === 'formula' || !block.transText) return;
-        const left = Math.round(block.box.x * scale);
-        const top = Math.round((pageHeight - block.box.y - block.box.h) * scale);
-        const width = Math.round(block.box.w * scale);
-        const height = Math.round(block.box.h * scale);
-
-        // 如果用户选择了对比衬底框 (mode-contrast)，则不需要在底图上生硬擦除
-        if (opacityModeIndex !== 1) {
-          ctx.fillStyle = block.style?.bgColor || '#ffffff';
-          // 扩展 2px 覆盖边缘微小抗锯齿及字根外溢
-          ctx.fillRect(Math.max(0, left - 2), Math.max(0, top - 2), width + 4, height + 4);
-        }
-      });
-      ctx.restore();
-    }
-
-    // 2. 原位挂载排版文本
+    // 1. 原排版文本块挂载 (纯 DOM 衬底覆盖保护，底图 Canvas 保持完整无损，实现 Alt 键透视原图秒级瞬时恢复)
     blocks.forEach(block => {
       if (!block.box) return;
       if (block.type === 'formula') return; // 公式保持原图渲染
@@ -2986,6 +3107,8 @@ document.addEventListener('DOMContentLoaded', () => {
         overlayBlock.classList.add('mode-contrast');
       } else if (opacityModeIndex === 2) {
         overlayBlock.classList.add('mode-clear');
+      } else {
+        overlayBlock.style.backgroundColor = block.style?.bgColor || '#ffffff';
       }
       overlayBlock.dataset.blockId = block.id;
 
@@ -3261,7 +3384,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function setViewMode(mode) {
     currentViewMode = mode;
+    const translationPane = document.getElementById('translation-pane');
     if (mode === 'flow') {
+      if (translationPane && translationPane.classList.contains('hidden')) {
+        translationPane.classList.remove('hidden');
+      }
       if (viewerContainerTrans) viewerContainerTrans.classList.add('hidden');
       if (bilingualReaderFlow) bilingualReaderFlow.classList.remove('hidden');
       if (viewModeLabel) viewModeLabel.textContent = '原位排版';
@@ -3276,7 +3403,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (viewModeLabel) viewModeLabel.textContent = '双语流视图';
       if (viewModeIcon) viewModeIcon.textContent = '📖';
       if (controlStyleSelect && controlStyleSelect.value === 'flow') {
-        controlStyleSelect.value = 'default';
+        controlStyleSelect.value = 'bilingual';
       }
     }
     chrome.storage.local.set({ pdfViewMode: mode });
@@ -3547,6 +3674,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const lastPage = currentPage;
     const renderId = ++currentRenderId;
 
+    // 记录缩放前当前页的内部相对滚动比例，缩放后精准还原视觉锚点
+    let relativeScrollRatio = 0;
+    const curPageEl = viewerContainer.querySelector(`.page-container[data-page-num="${lastPage}"]`);
+    if (curPageEl && viewerMain && curPageEl.offsetHeight > 0) {
+      relativeScrollRatio = Math.max(0, Math.min(1, (viewerMain.scrollTop - curPageEl.offsetTop) / curPageEl.offsetHeight));
+    }
+
     if (pageObserver) {
       pageObserver.disconnect();
     }
@@ -3581,7 +3715,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetPageElement = viewerContainer.querySelector(`.page-container[data-page-num="${lastPage}"]`);
     if (targetPageElement && viewerMain) {
       const targetOffsetTop = targetPageElement.offsetTop;
-      viewerMain.scrollTo({ top: Math.max(0, targetOffsetTop - 16) });
+      const targetScrollY = targetOffsetTop + (relativeScrollRatio * targetPageElement.offsetHeight) - 16;
+      viewerMain.scrollTo({ top: Math.max(0, targetScrollY) });
     }
 
     if (translationPane && !translationPane.classList.contains('hidden')) {
@@ -3751,7 +3886,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return false;
     }
 
-    // 聚合成物理 Y 分组 (Y 容差 3pt，并绝对过滤页眉与页脚，保留原生排版底色)
+    // 聚合成物理 Y 分组 (Y 容差 3pt，上下标容差 0.55*fontSize，并绝对过滤页眉与页脚，保留原生排版底色)
     const rawYGroups = [];
     for (const item of validItems) {
       // 忽略页眉页脚（正文之外的页码、版权、顶底跑头）
@@ -3759,7 +3894,16 @@ document.addEventListener('DOMContentLoaded', () => {
         continue;
       }
 
-      let group = rawYGroups.find(g => Math.abs(g.y - item.y) <= 3);
+      let group = rawYGroups.find(g => {
+        const delta = Math.abs(g.y - item.y);
+        if (delta <= 3) return true;
+        const refFont = g.items[0] ? g.items[0].fontSize : 12;
+        // 上下标与学术符号基线容差：字号较小且基线偏差在 0.55 * fontSize 范围内，合并入当前物理行
+        if (delta <= refFont * 0.55 && (item.fontSize < refFont * 0.9 || Math.abs(item.fontSize - refFont) <= 2)) {
+          return true;
+        }
+        return false;
+      });
       if (group) {
         group.items.push(item);
       } else {
@@ -3827,14 +3971,18 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // 1. 宽幅贯穿行识别 (页面主标题、通栏说明，宽度 > 56% 页面宽度)
+    // 1. 宽幅贯穿行与居中大标题识别 (页面主标题、通栏说明，宽度 > 54% 页面宽度，或居中大标题)
     const topWideSpans = [];
     const bottomWideSpans = [];
     const columnLineCandidates = [];
 
     for (const line of processedLines) {
-      if (line.w > pageWidth * 0.56) {
-        if (line.y > pageHeight * 0.55) {
+      const isCenteredHeading = (line.fontSize >= 13.5 || (line.isBold && line.fontSize >= 12)) &&
+        Math.abs((line.x + line.w / 2) - pageWidth / 2) < (pageWidth * 0.16) &&
+        line.w < pageWidth * 0.75;
+
+      if (line.w > pageWidth * 0.54 || (isCenteredHeading && line.y > pageHeight * 0.45)) {
+        if (line.y > pageHeight * 0.5) {
           topWideSpans.push(line);
         } else {
           bottomWideSpans.push(line);
@@ -3854,8 +4002,10 @@ document.addEventListener('DOMContentLoaded', () => {
       for (const col of columns) {
         const isLeftAligned = Math.abs(line.x - col.minX) < 40;
         const colOverlap = Math.min(col.maxX, line.x + line.w) - Math.max(col.minX, line.x);
-        // 水平左边缘高度对齐，或者与该栏水平投影有显著重叠
-        if (isLeftAligned || colOverlap > 12) {
+        const colWidth = col.maxX - col.minX;
+        // 水平左边缘对齐，或者与该栏水平投影有显著重叠且宽度相仿（避免宽行串入窄栏桥接）
+        const isSimilarWidth = Math.abs(line.w - colWidth) < 70 || colOverlap > line.w * 0.5;
+        if ((isLeftAligned && isSimilarWidth) || (colOverlap > 14 && isSimilarWidth)) {
           matchedCol = col;
           break;
         }
@@ -3918,10 +4068,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         let blockType = 'paragraph';
-        if (avgFontSize >= 16 || (isBold && avgFontSize >= 12.5 && currentParagraphLines.length <= 2)) {
-          blockType = 'heading';
-        } else if (avgFontSize <= 9.5 || isChartCaption(mergedText)) {
+        if (currentParagraphLines.some(l => l.isCaption) || avgFontSize <= 9.5 || isChartCaption(mergedText)) {
           blockType = 'caption';
+        } else if (avgFontSize >= 16 || (isBold && avgFontSize >= 12.5 && currentParagraphLines.length <= 2)) {
+          blockType = 'heading';
         }
 
         // 识别是否跨栏 (多栏跨度突变)
@@ -3987,23 +4137,12 @@ document.addEventListener('DOMContentLoaded', () => {
         continue;
       }
 
-      // 2) 图表/表格说明检测
+      // 2) 图表/表格说明起始检测 (若为多行说明，自动延续合并至标点闭合)
       if (isChartCaption(text)) {
-        flushParagraph();
-        blocks.push({
-          id: `block-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-          pageNum: pageNum,
-          pageHeight: pageHeight,
-          type: 'caption',
-          originalText: text,
-          box: lineObj.box,
-          style: {
-            fontSize: Math.round(lineObj.fontSize * 10) / 10,
-            isBold: lineObj.isBold,
-            fontName: lineObj.fontName
-          }
-        });
-        continue;
+        if (currentParagraphLines.length > 0) {
+          flushParagraph();
+        }
+        lineObj.isCaption = true;
       }
 
       // 3) 段落分界检测：基于句法标点闭合、排版连字符、跨栏检测与段距综合判断
@@ -4038,7 +4177,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const isCrossColumnContinuation = isColumnJump && !isHeaderStyleChange && !currIsListItem &&
           (prevEndsWithHyphen || currStartsWithLower || !prevEndsWithTerminal);
 
-        if (isCrossColumnContinuation) {
+        // 若当前处于图表说明 (Caption) 收集：遇到终结标点前持续合并邻近行
+        const isCaptionCollecting = currentParagraphLines.some(l => l.isCaption);
+        if (isCaptionCollecting && !prevEndsWithTerminal && lineGap < avgH * 2.2 && !isColumnJump) {
+          shouldBreak = false;
+        } else if (isCrossColumnContinuation) {
           shouldBreak = false;
         } else if (isColumnJump || isHeaderStyleChange || currIsListItem) {
           shouldBreak = true;
@@ -4185,13 +4328,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const ctrl = new AbortController();
         const timeoutId = setTimeout(() => ctrl.abort(), LOCAL_SERVER_TIMEOUT_MS);
+        if (activeTranslateController && typeof activeTranslateController.signal === 'object') {
+          activeTranslateController.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+        }
 
-        fetch('http://localhost:3300/api/translate/bio', {
+        fetch(`${LOCAL_SERVER_ORIGIN}/api/translate/bio`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: ctrl.signal,
           body: JSON.stringify({
             items,
+            sourceLang: 'auto',
             targetLang,
             crossPageContext: context,
             apiKey: creds.apiKey,
@@ -4312,7 +4459,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // 单页任务始终使用全新控制器；批量任务沿用调度器控制器
-    const ctrl = (isBatch && activeTranslateController) ? activeTranslateController : { aborted: false };
+    const ctrl = (isBatch && activeTranslateController) ? activeTranslateController : createTranslateController();
     if (!isBatch) activeTranslateController = ctrl;
     const docIdAtStart = currentDocId;
     const isStale = () => ctrl.aborted || !currentPdf || currentDocId !== docIdAtStart;
@@ -4576,7 +4723,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     isTranslatingDoc = true;
-    activeTranslateController = { aborted: false };
+    activeTranslateController = createTranslateController();
 
     // 动态检测是否配置个人 API Key
     const settings = await new Promise(resolve => {
@@ -4694,7 +4841,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function translatePageList(pages) {
     if (!currentPdf || isTranslatingDoc || !pages || pages.length === 0) return;
     isTranslatingDoc = true;
-    activeTranslateController = { aborted: false };
+    activeTranslateController = createTranslateController();
 
     transProgressCard.classList.remove('hidden');
     transActiveBadge.textContent = '选页翻译中...';
@@ -4822,14 +4969,24 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Ctrl + 滚轮缩放支持
+  // Ctrl + 滚轮缩放支持 (180ms 防抖与平滑累积)
+  let wheelZoomTimer = null;
+  let targetWheelScale = null;
   if (viewerMain) {
     viewerMain.addEventListener('wheel', (e) => {
       if (e.ctrlKey) {
         e.preventDefault();
         const delta = e.deltaY < 0 ? 0.1 : -0.1;
-        const nextScale = Math.min(3.0, Math.max(0.5, Math.round((currentScale + delta) * 10) / 10));
-        changeZoom(nextScale);
+        const base = targetWheelScale !== null ? targetWheelScale : currentScale;
+        targetWheelScale = Math.min(3.0, Math.max(0.5, Math.round((base + delta) * 10) / 10));
+        clearTimeout(wheelZoomTimer);
+        wheelZoomTimer = setTimeout(() => {
+          if (targetWheelScale !== null && targetWheelScale !== currentScale) {
+            const next = targetWheelScale;
+            targetWheelScale = null;
+            changeZoom(next);
+          }
+        }, 180);
       }
     }, { passive: false });
   }
@@ -5422,25 +5579,53 @@ document.addEventListener('DOMContentLoaded', () => {
     saveDocBtn.addEventListener('click', saveCurrentNotes);
   }
 
-  // 保存下拉拆分按钮与菜单交互
+  // 保存下拉拆分按钮与菜单交互 (fixed 锚定，彻底解决 header 溢出裁剪)
+  function updateSaveDropdownPosition() {
+    if (!saveDropdownMenu || !saveArrowBtn) return;
+    const rect = saveArrowBtn.getBoundingClientRect();
+    saveDropdownMenu.style.top = `${Math.round(rect.bottom + 6)}px`;
+    saveDropdownMenu.style.right = `${Math.round(window.innerWidth - rect.right)}px`;
+    saveDropdownMenu.style.left = 'auto';
+  }
+
   if (saveArrowBtn) {
     saveArrowBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!currentPdf || saveArrowBtn.disabled) return;
       if (saveDropdownMenu) {
-        saveDropdownMenu.classList.toggle('hidden');
+        const isOpening = saveDropdownMenu.classList.contains('hidden');
+        if (isOpening) {
+          updateSaveDropdownPosition();
+          saveDropdownMenu.classList.remove('hidden');
+        } else {
+          saveDropdownMenu.classList.add('hidden');
+        }
       }
     });
   }
 
-  // 点击外部收起保存下拉菜单
+  // 点击外部、滚动、改变视口尺寸时收起保存下拉菜单
   document.addEventListener('click', (e) => {
     if (saveDropdownMenu && !saveDropdownMenu.classList.contains('hidden')) {
-      if (!e.target.closest('.save-split-btn-group')) {
+      if (!e.target.closest('.save-split-btn-group') && !e.target.closest('#save-dropdown-menu')) {
         saveDropdownMenu.classList.add('hidden');
       }
     }
   });
+
+  window.addEventListener('resize', () => {
+    if (saveDropdownMenu && !saveDropdownMenu.classList.contains('hidden')) {
+      saveDropdownMenu.classList.add('hidden');
+    }
+  });
+
+  if (viewerMain) {
+    viewerMain.addEventListener('scroll', () => {
+      if (saveDropdownMenu && !saveDropdownMenu.classList.contains('hidden')) {
+        saveDropdownMenu.classList.add('hidden');
+      }
+    }, { passive: true });
+  }
 
   // 保存下拉菜单各项动作绑定
   if (menuSaveLocal) {
@@ -5590,6 +5775,34 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isDrawMode && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       undoLastStroke();
+    }
+  });
+
+  // 按住 Alt 键透视原图 (Peek Mode)，松开即时恢复译文覆盖
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Alt' && !e.repeat && !isPeekingLocked && viewerWorkspace) {
+      viewerWorkspace.classList.add('is-peeking');
+    }
+  });
+
+  window.addEventListener('keyup', (e) => {
+    if (e.key === 'Alt' && !isPeekingLocked && viewerWorkspace) {
+      viewerWorkspace.classList.remove('is-peeking');
+    }
+  });
+
+  // Alt + P 快捷键翻译当前可见页 (与界面提示一致) & Esc 收起下拉菜单
+  window.addEventListener('keydown', (e) => {
+    if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'p') {
+      if (currentPdf && translatePageBtn && !translatePageBtn.disabled) {
+        e.preventDefault();
+        translatePage(currentPage, false);
+      }
+    }
+    if (e.key === 'Escape') {
+      if (saveDropdownMenu && !saveDropdownMenu.classList.contains('hidden')) {
+        saveDropdownMenu.classList.add('hidden');
+      }
     }
   });
 
@@ -5972,7 +6185,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (translatePageBtn) {
     translatePageBtn.addEventListener('click', () => {
       if (!currentPdf) return;
-      activeTranslateController = { aborted: false };
+      activeTranslateController = createTranslateController();
       translatePage(currentPage, false);
     });
   }
@@ -6119,6 +6332,9 @@ document.addEventListener('DOMContentLoaded', () => {
     cancelTransBtn.addEventListener('click', () => {
       if (activeTranslateController) {
         activeTranslateController.aborted = true;
+        if (typeof activeTranslateController.abort === 'function') {
+          activeTranslateController.abort();
+        }
       }
     });
   }

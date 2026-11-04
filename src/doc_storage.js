@@ -124,24 +124,28 @@ export const DocStorage = {
     if (!docId) return;
     try {
       const db = await this.getDB();
-      const tx = db.transaction('doc_meta', 'readwrite');
-      const store = tx.objectStore('doc_meta');
-      const getReq = store.get(docId);
-      getReq.onsuccess = () => {
-        const existing = getReq.result || {
-          id: docId,
-          title: patch.title || '未命名文献',
-          createdAt: Date.now(),
-          numPages: patch.numPages || 0,
-          fileSize: patch.fileSize || 0
+      return new Promise((resolve) => {
+        const tx = db.transaction('doc_meta', 'readwrite');
+        const store = tx.objectStore('doc_meta');
+        const getReq = store.get(docId);
+        getReq.onsuccess = () => {
+          const existing = getReq.result || {
+            id: docId,
+            title: patch.title || '未命名文献',
+            createdAt: Date.now(),
+            numPages: patch.numPages || 0,
+            fileSize: patch.fileSize || 0
+          };
+          const updated = {
+            ...existing,
+            ...patch,
+            updatedAt: Date.now()
+          };
+          store.put(updated);
         };
-        const updated = {
-          ...existing,
-          ...patch,
-          updatedAt: Date.now()
-        };
-        store.put(updated);
-      };
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      });
     } catch (err) {
       console.warn('更新文献元数据失败:', err);
     }
@@ -154,29 +158,33 @@ export const DocStorage = {
     if (!docId) return;
     try {
       const db = await this.getDB();
-      const tx = db.transaction(['drawings', 'doc_meta'], 'readwrite');
-      const store = tx.objectStore('drawings');
-      const key = `${docId}_p${pageNum}`;
-      if (!strokes || strokes.length === 0) {
-        store.delete(key);
-      } else {
-        store.put(strokes, key);
-      }
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(['drawings', 'doc_meta'], 'readwrite');
+        const store = tx.objectStore('drawings');
+        const key = `${docId}_p${pageNum}`;
+        if (!strokes || strokes.length === 0) {
+          store.delete(key);
+        } else {
+          store.put(strokes, key);
+        }
 
-      // 更新元数据
-      const metaStore = tx.objectStore('doc_meta');
-      const getReq = metaStore.get(docId);
-      getReq.onsuccess = () => {
-        const existing = getReq.result || {
-          id: docId,
-          title: (meta && meta.title) || '未命名文献',
-          createdAt: Date.now()
+        // 更新元数据
+        const metaStore = tx.objectStore('doc_meta');
+        const getReq = metaStore.get(docId);
+        getReq.onsuccess = () => {
+          const existing = getReq.result || {
+            id: docId,
+            title: (meta && meta.title) || '未命名文献',
+            createdAt: Date.now()
+          };
+          existing.updatedAt = Date.now();
+          if (meta && meta.title) existing.title = meta.title;
+          if (meta && meta.numPages) existing.numPages = meta.numPages;
+          metaStore.put(existing);
         };
-        existing.updatedAt = Date.now();
-        if (meta && meta.title) existing.title = meta.title;
-        if (meta && meta.numPages) existing.numPages = meta.numPages;
-        metaStore.put(existing);
-      };
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = (e) => reject(e);
+      });
     } catch (err) {
       console.warn('持久化批注失败:', err);
     }
@@ -237,27 +245,31 @@ export const DocStorage = {
     if (!docId) return;
     try {
       const db = await this.getDB();
-      const tx = db.transaction('drawings', 'readwrite');
-      const store = tx.objectStore('drawings');
-      const draftList = [];
-      if (drawingsMap && drawingsMap instanceof Map) {
-        drawingsMap.forEach((strokes, p) => {
-          if (strokes && strokes.length > 0) {
-            draftList.push([p, strokes]);
-          }
-        });
-      }
-      if (draftList.length === 0) {
-        store.delete(`${docId}__draft`);
-      } else {
-        store.put({
-          docId,
-          timestamp: Date.now(),
-          drawings: draftList,
-          title: meta?.title || '',
-          numPages: meta?.numPages || 0
-        }, `${docId}__draft`);
-      }
+      return new Promise((resolve) => {
+        const tx = db.transaction('drawings', 'readwrite');
+        const store = tx.objectStore('drawings');
+        const draftList = [];
+        if (drawingsMap && drawingsMap instanceof Map) {
+          drawingsMap.forEach((strokes, p) => {
+            if (strokes && strokes.length > 0) {
+              draftList.push([p, strokes]);
+            }
+          });
+        }
+        if (draftList.length === 0) {
+          store.delete(`${docId}__draft`);
+        } else {
+          store.put({
+            docId,
+            timestamp: Date.now(),
+            drawings: draftList,
+            title: meta?.title || '',
+            numPages: meta?.numPages || 0
+          }, `${docId}__draft`);
+        }
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      });
     } catch (err) {
       console.warn('保存草稿快照失败:', err);
     }
@@ -303,8 +315,12 @@ export const DocStorage = {
     if (!docId) return;
     try {
       const db = await this.getDB();
-      const tx = db.transaction('drawings', 'readwrite');
-      tx.objectStore('drawings').delete(`${docId}__draft`);
+      return new Promise((resolve) => {
+        const tx = db.transaction('drawings', 'readwrite');
+        tx.objectStore('drawings').delete(`${docId}__draft`);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      });
     } catch (err) {
       console.warn('清除草稿快照失败:', err);
     }
@@ -317,8 +333,12 @@ export const DocStorage = {
     if (!docId) return;
     try {
       const db = await this.getDB();
-      const tx = db.transaction('drawings', 'readwrite');
-      tx.objectStore('drawings').delete(`${docId}_p${pageNum}`);
+      return new Promise((resolve) => {
+        const tx = db.transaction('drawings', 'readwrite');
+        tx.objectStore('drawings').delete(`${docId}_p${pageNum}`);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      });
     } catch (err) {
       console.warn('删除批注失败:', err);
     }
@@ -331,29 +351,33 @@ export const DocStorage = {
     if (!docId) return;
     try {
       const db = await this.getDB();
-      const tx = db.transaction(['translations', 'doc_meta'], 'readwrite');
-      const store = tx.objectStore('translations');
-      const key = `${docId}_p${pageNum}`;
-      if (!blocks || blocks.length === 0) {
-        store.delete(key);
-      } else {
-        store.put(blocks, key);
-      }
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(['translations', 'doc_meta'], 'readwrite');
+        const store = tx.objectStore('translations');
+        const key = `${docId}_p${pageNum}`;
+        if (!blocks || blocks.length === 0) {
+          store.delete(key);
+        } else {
+          store.put(blocks, key);
+        }
 
-      // 更新元数据
-      const metaStore = tx.objectStore('doc_meta');
-      const getReq = metaStore.get(docId);
-      getReq.onsuccess = () => {
-        const existing = getReq.result || {
-          id: docId,
-          title: (meta && meta.title) || '未命名文献',
-          createdAt: Date.now()
+        // 更新元数据
+        const metaStore = tx.objectStore('doc_meta');
+        const getReq = metaStore.get(docId);
+        getReq.onsuccess = () => {
+          const existing = getReq.result || {
+            id: docId,
+            title: (meta && meta.title) || '未命名文献',
+            createdAt: Date.now()
+          };
+          existing.updatedAt = Date.now();
+          if (meta && meta.title) existing.title = meta.title;
+          if (meta && meta.numPages) existing.numPages = meta.numPages;
+          metaStore.put(existing);
         };
-        existing.updatedAt = Date.now();
-        if (meta && meta.title) existing.title = meta.title;
-        if (meta && meta.numPages) existing.numPages = meta.numPages;
-        metaStore.put(existing);
-      };
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = (e) => reject(e);
+      });
     } catch (err) {
       console.warn('持久化译文失败:', err);
     }
@@ -457,10 +481,10 @@ export const DocStorage = {
           if (cursor) {
             totalTransPages++;
             const k = String(cursor.key);
-            const parts = k.split('_p');
-            if (parts.length >= 2) {
-              const docId = parts.slice(0, -1).join('_p');
-              const p = parseInt(parts[parts.length - 1], 10);
+            const m = k.match(/^(.*)_p(\d+)$/);
+            if (m) {
+              const docId = m[1];
+              const p = parseInt(m[2], 10);
               getDocStat(docId).transPages.add(p);
             }
             try {
@@ -473,12 +497,12 @@ export const DocStorage = {
         drawStore.openCursor().onsuccess = (e) => {
           const cursor = e.target.result;
           if (cursor) {
-            totalDrawPages++;
             const k = String(cursor.key);
-            const parts = k.split('_p');
-            if (parts.length >= 2) {
-              const docId = parts.slice(0, -1).join('_p');
-              const p = parseInt(parts[parts.length - 1], 10);
+            const m = k.match(/^(.*)_p(\d+)$/);
+            if (m) {
+              totalDrawPages++;
+              const docId = m[1];
+              const p = parseInt(m[2], 10);
               getDocStat(docId).drawPages.add(p);
             }
             try {
@@ -505,8 +529,8 @@ export const DocStorage = {
             docsList.push({
               id: docId,
               title: meta.title || fallbackTitle,
-              updatedAt: meta.updatedAt || meta.createdAt || Date.now(),
-              createdAt: meta.createdAt || meta.updatedAt || Date.now(),
+              updatedAt: meta.updatedAt || meta.createdAt || 0,
+              createdAt: meta.createdAt || meta.updatedAt || 0,
               numPages: meta.numPages || 0,
               transPagesCount: stats.transPages.size,
               drawPagesCount: stats.drawPages.size
@@ -631,6 +655,7 @@ export const DocStorage = {
 
         idSet.forEach((docId) => {
           metaStore.delete(docId);
+          drawStore.delete(`${docId}__draft`);
         });
 
         tx.oncomplete = () => {

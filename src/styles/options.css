@@ -970,4 +970,26 @@ input:checked + .slider:before {
   color: #fff;
 }
 
+.save-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 28px;
+  padding: 8px 18px;
+  border-radius: 20px;
+  background: rgba(28, 28, 30, 0.92);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(10px);
+  z-index: 9999;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+}
+
+.save-toast.hidden {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
 

@@ -18,6 +18,7 @@ export async function handleBioTranslate(payload) {
     text,
     items,
     targetLang = 'zh-CN',
+    sourceLang = 'auto',
     crossPageContext = null,
     apiKey,
     endpoint = 'https://api.deepseek.com/chat/completions',
@@ -67,7 +68,7 @@ export async function handleBioTranslate(payload) {
     let rateLimitEncountered = false;
     const freeResultsRaw = await runThrottled(deterministicItems, async (dItem) => {
       try {
-        let trans = await translateFreeFast(dItem.text, targetLang);
+        let trans = await translateFreeFast(dItem.text, targetLang, sourceLang);
         const rMap = redactionMaps.get(dItem.id);
         trans = restoreSanitizedData(trans, rMap);
         return { id: dItem.id, text: trans, source: 'free_engine' };
@@ -76,7 +77,9 @@ export async function handleBioTranslate(payload) {
           rateLimitEncountered = true;
         }
         console.warn(`[Hybrid] 段落 ID:${dItem.id} 免Key通道遇阻，自动并入重试队列:`, err.message);
-        uncertainItems.push({ id: dItem.id, text: dItem.text, rawText: dItem.text });
+        const mText = (persona !== 'general' ? maskBioEntities(dItem.text) : maskNumericEntities(dItem.text));
+        tokenMaps.set(dItem.id, mText.tokenMap);
+        uncertainItems.push({ id: dItem.id, text: mText.maskedText, rawText: dItem.text });
         return null;
       }
     }, 2, 90);
@@ -92,7 +95,7 @@ export async function handleBioTranslate(payload) {
         // 若未提供 API Key，安全平滑回退走免费通道，同样使用节流并发
         console.warn(`[Hybrid:${persona}] 未提供 API Key，所有高危段落降级至免Key通道并注入词典校正`);
         const fallbackResultsRaw = await runThrottled(uncertainItems, async (uItem) => {
-          let trans = await translateFreeFast(uItem.rawText || uItem.text, targetLang);
+          let trans = await translateFreeFast(uItem.rawText || uItem.text, targetLang, sourceLang);
           const terms = itemTermsMap.get(uItem.id) || [];
           for (const t of terms) {
             const regex = new RegExp(`\\b${t.term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
@@ -113,7 +116,8 @@ export async function handleBioTranslate(payload) {
           allMatchedTerms,
           crossPageContext,
           targetLang,
-          persona
+          persona,
+          sourceLang
         );
 
         // 请求大模型
@@ -218,7 +222,7 @@ export async function handleBioTranslate(payload) {
     // 确定性平实文本：若开启智能分流，直接由 Google / Bing 免 Key 快速返回
     if (enableHybrid && !uncertainty.isUncertain) {
       try {
-        let trans = await translateFreeFast(sanitizedText, targetLang);
+        let trans = await translateFreeFast(sanitizedText, targetLang, sourceLang);
         trans = restoreSanitizedData(trans, redactionMap);
         return {
           success: true,
@@ -235,7 +239,7 @@ export async function handleBioTranslate(payload) {
 
     // 存在学术不确定性/生化实体时，调用 AI 模型 API Key 精译
     if (!apiKey) {
-      let trans = await translateFreeFast(sanitizedText, targetLang);
+      let trans = await translateFreeFast(sanitizedText, targetLang, sourceLang);
       for (const t of matchedTerms) {
         const regex = new RegExp(`\\b${t.term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
         trans = trans.replace(regex, t.translation);
@@ -250,7 +254,7 @@ export async function handleBioTranslate(payload) {
       };
     }
 
-    const systemPrompt = buildBioSystemPrompt(matchedTerms, targetLang, persona);
+    const systemPrompt = buildBioSystemPrompt(matchedTerms, targetLang, persona, false, sourceLang);
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {

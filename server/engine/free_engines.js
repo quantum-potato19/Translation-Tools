@@ -20,7 +20,7 @@ let currentClientIndex = 0;
 /**
  * 谷歌免费高速接口翻译 (支持多客户端标识轮换 + 429 智能熔断保护)
  */
-export async function translateGoogle(text, targetLang = 'zh-CN') {
+export async function translateGoogle(text, targetLang = 'zh-CN', sourceLang = 'auto') {
   if (!text || typeof text !== 'string') return '';
   const now = Date.now();
   if (now < googleCooldownUntil) {
@@ -28,10 +28,11 @@ export async function translateGoogle(text, targetLang = 'zh-CN') {
   }
 
   const tl = targetLang === 'zh-CN' ? 'zh-CN' : targetLang;
+  const sl = sourceLang && sourceLang !== 'auto' ? sourceLang : 'auto';
 
   for (let i = 0; i < GOOGLE_CLIENTS.length; i++) {
     const client = GOOGLE_CLIENTS[(currentClientIndex + i) % GOOGLE_CLIENTS.length];
-    const url = `https://translate.googleapis.com/translate_a/single?client=${client}&sl=auto&tl=${tl}&dt=t&q=${encodeURIComponent(text)}`;
+    const url = `https://translate.googleapis.com/translate_a/single?client=${client}&sl=${sl}&tl=${tl}&dt=t&q=${encodeURIComponent(text)}`;
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 6000);
@@ -95,16 +96,17 @@ async function getBingToken() {
 /**
  * 微软 Bing 翻译接口
  */
-export async function translateBing(text, targetLang = 'zh-CN') {
+export async function translateBing(text, targetLang = 'zh-CN', sourceLang = 'auto') {
   if (!text || typeof text !== 'string') return '';
   const langMap = { 'zh-CN': 'zh-Hans', 'en': 'en', 'ja': 'ja', 'ko': 'ko' };
   const to = langMap[targetLang] || targetLang;
+  const fromLang = (sourceLang && sourceLang !== 'auto') ? (langMap[sourceLang] || sourceLang) : 'auto-detect';
 
   let tokenInfo = await getBingToken();
 
   const doRequest = async (info) => {
     const params = new URLSearchParams();
-    params.append('fromLang', 'auto-detect');
+    params.append('fromLang', fromLang);
     params.append('text', text);
     params.append('to', to);
     params.append('key', info.key);
@@ -140,10 +142,11 @@ export async function translateBing(text, targetLang = 'zh-CN') {
 /**
  * 第三免Key备用通道 (MyMemory 免费 API)
  */
-export async function translateMyMemory(text, targetLang = 'zh-CN') {
+export async function translateMyMemory(text, targetLang = 'zh-CN', sourceLang = 'auto') {
   if (!text || typeof text !== 'string') return '';
   const to = targetLang === 'zh-CN' ? 'zh-CN' : targetLang;
-  const langpair = `en|${to}`;
+  const sl = (sourceLang && sourceLang !== 'auto') ? sourceLang : 'en';
+  const langpair = `${sl}|${to}`;
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 480))}&langpair=${langpair}`;
 
   const controller = new AbortController();
@@ -167,17 +170,17 @@ export async function translateMyMemory(text, targetLang = 'zh-CN') {
 /**
  * 免费三通道自适应快速翻译 (Google 多端轮询 -> Bing 动态鉴权 -> MyMemory 兜底)
  */
-export async function translateFreeFast(text, targetLang = 'zh-CN') {
+export async function translateFreeFast(text, targetLang = 'zh-CN', sourceLang = 'auto') {
   try {
-    return await translateGoogle(text, targetLang);
+    return await translateGoogle(text, targetLang, sourceLang);
   } catch (googleErr) {
     console.warn(`[FreeEngine] Google 翻译受限 (${googleErr.message})，平滑降级至 Bing 翻译...`);
     try {
-      return await translateBing(text, targetLang);
+      return await translateBing(text, targetLang, sourceLang);
     } catch (bingErr) {
       console.warn(`[FreeEngine] Bing 翻译受限 (${bingErr.message})，平滑降级至 MyMemory 兜底...`);
       try {
-        return await translateMyMemory(text, targetLang);
+        return await translateMyMemory(text, targetLang, sourceLang);
       } catch (myMemErr) {
         throw new Error(`免费通道全部受限 (Google: ${googleErr.message} / Bing: ${bingErr.message} / MyMemory: ${myMemErr.message})`);
       }
