@@ -172,7 +172,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ];
 
       if (result.geminiApiKey && result.geminiApiKey.trim()) {
-        available.push({ value: 'gemini', label: 'Google Gemini' });
+        available.push({ value: 'gemini', label: 'Gemini' });
       }
       if (result.deepseekApiKey && result.deepseekApiKey.trim()) {
         available.push({ value: 'deepseek', label: 'DeepSeek' });

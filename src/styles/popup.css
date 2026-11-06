@@ -1,5 +1,9 @@
 /* iOS 26 Aesthetic CSS for Toolbar Popup (popup.css) */
 
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   padding: 0;
@@ -150,12 +154,16 @@ textarea::placeholder {
   background: #ffffff;
   border-radius: 14px;
   border: 1px solid rgba(0, 0, 0, 0.06);
-  padding: 8px 12px;
+  padding: 6px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 4px;
   margin-bottom: 10px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+  box-sizing: border-box;
+  width: 100%;
+  overflow: hidden;
 }
 
 .ios-select {
@@ -165,16 +173,26 @@ textarea::placeholder {
   border: none;
   outline: none;
   border-radius: 8px;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
-  padding: 6px 20px 6px 10px;
+  padding: 5px 18px 5px 8px;
   color: #3a3a3c;
   cursor: pointer;
   background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238e8e93' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 6px center;
-  background-size: 10px;
+  background-position: right 5px center;
+  background-size: 9px;
   transition: background 0.15s;
+  box-sizing: border-box;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.controls-card .ios-select:not(.accent-select) {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 0;
 }
 
 .ios-select:hover {
@@ -187,6 +205,12 @@ textarea::placeholder {
   background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23007AFF' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
 }
 
+.controls-card .accent-select {
+  flex: 0 0 auto;
+  max-width: 86px;
+  min-width: 58px;
+}
+
 .accent-select:hover {
   background-color: rgba(10, 132, 255, 0.15);
 }
@@ -194,15 +218,19 @@ textarea::placeholder {
 .swap-btn {
   background: none;
   border: none;
-  width: 28px;
-  height: 28px;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   color: #8e8e93;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  padding: 0;
+  margin: 0;
   transition: background 0.2s, color 0.2s;
+  box-sizing: border-box;
 }
 
 .swap-btn:hover {
