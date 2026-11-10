@@ -64,7 +64,7 @@ export const DEFAULT_PERSONA = 'general';
 // 内置 AI 模型默认清单
 export const AI_MODELS = {
   glm: ['glm-4-flash', 'glm-4.5-flash', 'glm-4.7-flash', 'glm-4-flashx'],
-  gemini: ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+  gemini: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-pro'],
   deepseek: ['deepseek-chat', 'deepseek-reasoner']
 };
 
@@ -136,3 +136,43 @@ export function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+
+// 脱敏过滤报错或日志文本中的 API Key 与鉴权令牌，防止在 UI 或控制台中回显泄露
+export function redactSensitiveText(str, knownKeys = []) {
+  if (!str || typeof str !== 'string') return str || '';
+  let s = str;
+  for (const k of knownKeys) {
+    if (k && typeof k === 'string' && k.trim().length >= 6) {
+      const clean = k.trim();
+      s = s.split(clean).join('[REDACTED_KEY]');
+    }
+  }
+  s = s.replace(/\b(sk-[a-zA-Z0-9_-]{8,}|AIzaSy[a-zA-Z0-9_-]{10,}|gsk_[a-zA-Z0-9_-]{10,})\b/g, '[REDACTED_KEY]');
+  s = s.replace(/([?&]key=)[^&\s"']+/gi, '$1[REDACTED_KEY]');
+  s = s.replace(/(Bearer\s+)[a-zA-Z0-9._\-]{8,}/gi, '$1[REDACTED_KEY]');
+  return s;
+}
+
+// Token 统计与防滥用监控配置常量
+export const TOKEN_STATS_STORAGE_KEY = 'tokenUsageStats';
+export const TOKEN_LIMIT_DEFAULTS = {
+  dailyTokenWarnLimit: 50000,   // 每日预警阈值 (5万 Tokens)
+  dailyTokenHardLimit: 200000,  // 每日硬熔断阈值 (20万 Tokens，填 0 禁用)
+  burstRpmLimit: 20,            // 1分钟内高频调用预警阈值 (次/分)
+  burstTokenLimit: 30000        // 1分钟内突发 Token 预警阈值
+};
+
+// 极轻量级 Token 估算器 (纯算法零依赖，耗时 < 0.05ms，用于流式计费与无 usage 兜底)
+// 中文字符/全角字符 ~1.5 tokens，英文词汇 ~1.3 tokens，标点符号 ~0.5 tokens
+export function estimateTokenCount(text) {
+  if (!text || typeof text !== 'string') return 0;
+  const s = text.trim();
+  if (!s) return 0;
+  const cjkMatches = s.match(/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/g);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+  const nonCjk = s.replace(/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/g, ' ');
+  const words = (nonCjk.match(/[a-zA-Z0-9_\-]+/g) || []).length;
+  const symbols = (nonCjk.match(/[^a-zA-Z0-9_\s\-]/g) || []).length;
+  return Math.max(1, Math.ceil(cjkCount * 1.5 + words * 1.3 + symbols * 0.5));
+}
+

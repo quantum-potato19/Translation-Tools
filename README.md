@@ -50,7 +50,7 @@
 ## 🚀 Quick Start
 
 ### Method 1: Install Pre-built Package (Recommended)
-1. Download `translate-fy-v1.0.2.zip` from the [Releases](../../releases) section (or from `release/`).
+1. Download `translate-fy-v1.0.3.zip` from the [Releases](../../releases) section (or from `release/`).
 2. Unpack the `.zip` archive into a local folder.
 3. Open `chrome://extensions` (or `edge://extensions`) in your browser.
 4. Enable **Developer mode** in the top-right corner.

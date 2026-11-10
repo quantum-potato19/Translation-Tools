@@ -8,7 +8,13 @@ import {
   LOCAL_SERVER_ORIGIN
 } from './shared/constants.js';
 
-// 1. 设置 Worker
+// 1. 设置 Worker 与防嵌套点击劫持保护 (Clickjacking Guard)
+if (typeof window !== 'undefined' && window.top !== window.self && location.protocol === 'chrome-extension:') {
+  try {
+    window.location.replace('about:blank');
+  } catch (e) {}
+}
+
 if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
   pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.js');
 } else {
@@ -4274,8 +4280,24 @@ document.addEventListener('DOMContentLoaded', () => {
   const LOCAL_SERVER_TIMEOUT_MS = 90000;
   const LOCAL_SERVER_REPROBE_MS = 60000;
 
-  // 按用户所选引擎解析本地学术引擎所需凭据；返回 null 表示该引擎不走本地服务 (如 Gemini 非 OpenAI 兼容协议)
+  // 按用户所选引擎解析本地学术引擎所需凭据；为防止 API Key 经本地 HTTP 明文传输泄露，扩展环境下所有含密钥/AI 引擎一律走 Background HTTPS 直连
   function resolveLocalEngineCredentials(engine, model, settings) {
+    const isExtensionEnv = typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id;
+    if (isExtensionEnv) {
+      if (
+        engine === 'glm' ||
+        engine === 'deepseek' ||
+        engine === 'gemini' ||
+        engine === 'deepl' ||
+        engine === 'youdao' ||
+        (engine && engine.startsWith('custom_'))
+      ) {
+        return null; // 交由扩展 Background 安全沙箱通过 HTTPS 直接请求，绝不向 localhost:3300 明文发送 API Key
+      }
+      // 仅免 Key 公共通道 (google/bing) 允许走本地无密钥混合加速，且 apiKey 恒为空字符串
+      return { apiKey: '', endpoint: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat' };
+    }
+
     if (engine && engine.startsWith('custom_')) {
       const customId = engine.substring(7);
       const cm = (settings.customModels || []).find(m => m.id === customId);
@@ -4307,80 +4329,82 @@ document.addEventListener('DOMContentLoaded', () => {
       const activePersona = typeof persona === 'string' ? persona : (persona ? 'biochem' : 'general');
       const viaChrome = () => fallbackChromeBatch(items, engine, targetLang, model, context, activePersona).then(resolve).catch(reject);
 
+      // 扩展环境下：任何需要 API Key 的引擎或 AI 引擎直接由 Background 沙箱 HTTPS 承接，不读取也不外发任何 API Key
+      const isExtensionEnv = typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id;
+      if (
+        isExtensionEnv &&
+        (engine === 'glm' || engine === 'deepseek' || engine === 'gemini' || engine === 'deepl' || engine === 'youdao' || (engine && engine.startsWith('custom_')))
+      ) {
+        viaChrome();
+        return;
+      }
+
       // 已确认无本地 Node 服务且未到重新探测窗口：直接由扩展 Background 承接
       if (localServerReachable === false && Date.now() < localServerRetryAt) {
         viaChrome();
         return;
       }
 
-      chrome.storage.local.get({
-        deepseekApiKey: '',
-        glmApiKey: '',
-        glmActiveModel: '',
-        deepseekActiveModel: '',
-        customModels: []
-      }, (settings) => {
-        const creds = resolveLocalEngineCredentials(engine, model, settings);
-        if (!creds) {
-          viaChrome();
+      const creds = resolveLocalEngineCredentials(engine, model, {});
+      if (!creds) {
+        viaChrome();
+        return;
+      }
+
+      const ctrl = new AbortController();
+      const timeoutId = setTimeout(() => ctrl.abort(), LOCAL_SERVER_TIMEOUT_MS);
+      if (activeTranslateController && typeof activeTranslateController.signal === 'object') {
+        activeTranslateController.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+      }
+
+      fetch(`${LOCAL_SERVER_ORIGIN}/api/translate/bio`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          items,
+          sourceLang: 'auto',
+          targetLang,
+          crossPageContext: context,
+          apiKey: '',
+          endpoint: creds.endpoint,
+          model: creds.model,
+          persona: activePersona,
+          enableHybrid: true
+        })
+      }).then(r => {
+        clearTimeout(timeoutId);
+        localServerReachable = true; // 能收到 HTTP 响应即说明服务在线，即便返回非 2xx
+        return r.ok ? r.json() : null;
+      }).then(res => {
+        if (res && res.success && Array.isArray(res.translations)) {
+          if (res.dispatchStats) {
+            console.log(`[${activePersona} 智能分流] ${res.dispatchStats.totalCount} 段落处理完毕: ${res.dispatchStats.freeCount} 段免Key直达，${res.dispatchStats.aiCount} 段大模型推理 (节约 Token: ${res.dispatchStats.savedTokenRatio})`);
+          }
+          if (res.dispatchStats && res.dispatchStats.rateLimited) {
+            const freeQuotaHint = document.getElementById('free-quota-hint');
+            if (freeQuotaHint) freeQuotaHint.classList.remove('hidden');
+            showToast('⚠️ 免Key公共通道触发频次限制，已自动启用备用线路与平滑排队；配置免费密钥可提速10倍。', 4500);
+          }
+          if (res.matchedTerms && res.matchedTerms.length > 0) {
+            console.log(`[${activePersona} 术语增强] 命中 ${res.matchedTerms.length} 个权威专有词条:`, res.matchedTerms.slice(0, 5).map(t => `${t.term} -> ${t.translation}`).join('; '));
+          }
+          resolve(res.translations);
           return;
         }
-
-        const ctrl = new AbortController();
-        const timeoutId = setTimeout(() => ctrl.abort(), LOCAL_SERVER_TIMEOUT_MS);
-        if (activeTranslateController && typeof activeTranslateController.signal === 'object') {
-          activeTranslateController.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+        // 本地接口异常时无缝回退到扩展 background
+        viaChrome();
+      }).catch((err) => {
+        clearTimeout(timeoutId);
+        if (err && err.name === 'AbortError') {
+          // 服务在线但响应超时：不标记离线，仅本次回退
+          console.warn(`[本地学术引擎] 响应超过 ${LOCAL_SERVER_TIMEOUT_MS / 1000}s，本次回退扩展通道`);
+        } else {
+          // 本地未安装/未启动 Node 服务：标记离线，60s 后允许重新探测
+          localServerReachable = false;
+          localServerRetryAt = Date.now() + LOCAL_SERVER_REPROBE_MS;
         }
-
-        fetch(`${LOCAL_SERVER_ORIGIN}/api/translate/bio`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: ctrl.signal,
-          body: JSON.stringify({
-            items,
-            sourceLang: 'auto',
-            targetLang,
-            crossPageContext: context,
-            apiKey: creds.apiKey,
-            endpoint: creds.endpoint,
-            model: creds.model,
-            persona: activePersona,
-            enableHybrid: true
-          })
-        }).then(r => {
-          clearTimeout(timeoutId);
-          localServerReachable = true; // 能收到 HTTP 响应即说明服务在线，即便返回非 2xx
-          return r.ok ? r.json() : null;
-        }).then(res => {
-          if (res && res.success && Array.isArray(res.translations)) {
-            if (res.dispatchStats) {
-              console.log(`[${activePersona} 智能分流] ${res.dispatchStats.totalCount} 段落处理完毕: ${res.dispatchStats.freeCount} 段免Key直达，${res.dispatchStats.aiCount} 段大模型推理 (节约 Token: ${res.dispatchStats.savedTokenRatio})`);
-            }
-            if (res.dispatchStats && res.dispatchStats.rateLimited) {
-              const freeQuotaHint = document.getElementById('free-quota-hint');
-              if (freeQuotaHint) freeQuotaHint.classList.remove('hidden');
-              showToast('⚠️ 免Key公共通道触发频次限制，已自动启用备用线路与平滑排队；配置免费密钥可提速10倍。', 4500);
-            }
-            if (res.matchedTerms && res.matchedTerms.length > 0) {
-              console.log(`[${activePersona} 术语增强] 命中 ${res.matchedTerms.length} 个权威专有词条:`, res.matchedTerms.slice(0, 5).map(t => `${t.term} -> ${t.translation}`).join('; '));
-            }
-            resolve(res.translations);
-            return;
-          }
-          // 本地接口异常时无缝回退到扩展 background
-          viaChrome();
-        }).catch((err) => {
-          clearTimeout(timeoutId);
-          if (err && err.name === 'AbortError') {
-            // 服务在线但响应超时：不标记离线，仅本次回退
-            console.warn(`[本地学术引擎] 响应超过 ${LOCAL_SERVER_TIMEOUT_MS / 1000}s，本次回退扩展通道`);
-          } else {
-            // 本地未安装/未启动 Node 服务：标记离线，60s 后允许重新探测
-            localServerReachable = false;
-            localServerRetryAt = Date.now() + LOCAL_SERVER_REPROBE_MS;
-          }
-          viaChrome();
-        });
+        viaChrome();
       });
     });
   }

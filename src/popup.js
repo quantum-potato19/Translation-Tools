@@ -38,6 +38,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const exportVocabMdBtn = document.getElementById('export-vocab-md-btn');
   const exportVocabCsvBtn = document.getElementById('export-vocab-csv-btn');
   const clearUnstarredBtn = document.getElementById('clear-unstarred-btn');
+  const popupTokenDot = document.getElementById('popup-token-dot');
+  const popupTokenText = document.getElementById('popup-token-text');
+  const popupTokenSettingsLink = document.getElementById('popup-token-settings-link');
 
   let currentRequestId = 0;
   let debounceTimer;
@@ -163,6 +166,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // 动态载入用户在设置中启用的模型列表
       if (Array.isArray(result.glmModels) && result.glmModels.length > 0) AI_MODELS.glm = result.glmModels;
+      if (Array.isArray(result.geminiModels) && result.geminiModels.length > 0) AI_MODELS.gemini = result.geminiModels;
+      if (Array.isArray(result.deepseekModels) && result.deepseekModels.length > 0) AI_MODELS.deepseek = result.deepseekModels;
 
       // 动态构建可选引擎列表
       engineSelect.innerHTML = '';
@@ -349,6 +354,7 @@ document.addEventListener('DOMContentLoaded', () => {
           resultText.textContent = `翻译出错：${response.error}`;
           resultText.style.color = '#ff3b30';
         }
+        updateTokenUsageBadge();
       });
     });
   }
@@ -674,6 +680,36 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
+  // Token 用量角标更新
+  function updateTokenUsageBadge() {
+    if (!popupTokenText) return;
+    chrome.runtime.sendMessage({ action: 'getTokenStats' }, (res) => {
+      if (chrome.runtime.lastError || !res || !res.success || !res.stats) return;
+      const stats = res.stats;
+      const todayTokens = Number(stats.todayTokens) || 0;
+      const warnLimit = Number(stats.dailyTokenWarnLimit) || 50000;
+      const formatK = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+      popupTokenText.textContent = `今日 AI Token: ${formatK(todayTokens)} / ${formatK(warnLimit)}`;
+
+      if (popupTokenDot) {
+        if (todayTokens >= warnLimit) {
+          popupTokenDot.style.background = '#FF3B30';
+        } else if (todayTokens >= warnLimit * 0.8) {
+          popupTokenDot.style.background = '#FF9500';
+        } else {
+          popupTokenDot.style.background = '#34C759';
+        }
+      }
+    });
+  }
+
+  if (popupTokenSettingsLink) {
+    popupTokenSettingsLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      chrome.runtime.openOptionsPage();
+    });
+  }
+
   // 点击打开选项设置页面
   settingsBtn.addEventListener('click', () => {
     chrome.runtime.openOptionsPage();
@@ -681,4 +717,5 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 初始化入口
   initializePopup();
+  updateTokenUsageBadge();
 });

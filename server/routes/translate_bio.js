@@ -6,6 +6,30 @@ import { translateFreeFast, runThrottled } from '../engine/free_engines.js';
 import { evaluateChunkUncertainty } from '../engine/uncertainty_evaluator.js';
 import { sanitizeTextForUpload, restoreSanitizedData, auditTextSafety } from '../engine/privacy_filter.js';
 
+function isLocalEndpoint(endpoint) {
+  if (!endpoint || typeof endpoint !== 'string') return false;
+  try {
+    const u = new URL(endpoint.trim());
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
+  } catch (e) {
+    return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(endpoint.trim());
+  }
+}
+
+function redactSensitiveText(str, knownKeys = []) {
+  if (!str || typeof str !== 'string') return '';
+  let out = str;
+  for (const k of knownKeys) {
+    if (k && typeof k === 'string' && k.trim().length >= 6) {
+      out = out.split(k.trim()).join('[REDACTED_KEY]');
+    }
+  }
+  out = out.replace(/\b(sk-[a-zA-Z0-9_-]{8,}|AIzaSy[a-zA-Z0-9_-]{10,}|gsk_[a-zA-Z0-9_-]{10,})\b/g, '[REDACTED_KEY]');
+  out = out.replace(/([?&]key=)[^&\s"']+/gi, '$1[REDACTED_KEY]');
+  out = out.replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[REDACTED_KEY]');
+  return out;
+}
+
 /**
  * 处理单段或批量高精度学术/通用翻译请求
  * 支持：
@@ -91,7 +115,7 @@ export async function handleBioTranslate(payload) {
     let allMatchedTerms = [];
 
     if (uncertainItems.length > 0) {
-      if (!apiKey) {
+      if (!apiKey && !isLocalEndpoint(endpoint)) {
         // 若未提供 API Key，安全平滑回退走免费通道，同样使用节流并发
         console.warn(`[Hybrid:${persona}] 未提供 API Key，所有高危段落降级至免Key通道并注入词典校正`);
         const fallbackResultsRaw = await runThrottled(uncertainItems, async (uItem) => {
@@ -120,15 +144,19 @@ export async function handleBioTranslate(payload) {
           sourceLang
         );
 
-        // 请求大模型
+        const reqHeaders = {
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://github.com/GeoffLeng/Translation-Tools',
+          'X-Title': 'Lite Translate Academic'
+        };
+        if (apiKey && apiKey.trim()) {
+          reqHeaders['Authorization'] = `Bearer ${apiKey.trim()}`;
+        }
+
+        // 请求大模型 (带 30 秒超时保护)
         const response = await fetch(endpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-            'HTTP-Referer': 'https://github.com/GeoffLeng/Translation-Tools',
-            'X-Title': 'Lite Translate Academic'
-          },
+          headers: reqHeaders,
           body: JSON.stringify({
             model: model,
             messages: [
@@ -136,12 +164,13 @@ export async function handleBioTranslate(payload) {
               { role: 'user', content: userPrompt }
             ],
             temperature: 0.2
-          })
+          }),
+          signal: AbortSignal.timeout(30000)
         });
 
         if (!response.ok) {
           const err = await response.json().catch(() => ({}));
-          throw new Error(err.error?.message || `大模型端点响应异常: HTTP ${response.status}`);
+          throw new Error(redactSensitiveText(err.error?.message || `大模型端点响应异常: HTTP ${response.status}`, [apiKey]));
         }
 
         const resData = await response.json();
@@ -238,7 +267,7 @@ export async function handleBioTranslate(payload) {
     }
 
     // 存在学术不确定性/生化实体时，调用 AI 模型 API Key 精译
-    if (!apiKey) {
+    if (!apiKey && !isLocalEndpoint(endpoint)) {
       let trans = await translateFreeFast(sanitizedText, targetLang, sourceLang);
       for (const t of matchedTerms) {
         const regex = new RegExp(`\\b${t.term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
@@ -254,13 +283,17 @@ export async function handleBioTranslate(payload) {
       };
     }
 
+    const singleHeaders = {
+      'Content-Type': 'application/json'
+    };
+    if (apiKey && apiKey.trim()) {
+      singleHeaders['Authorization'] = `Bearer ${apiKey.trim()}`;
+    }
+
     const systemPrompt = buildBioSystemPrompt(matchedTerms, targetLang, persona, false, sourceLang);
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
+      headers: singleHeaders,
       body: JSON.stringify({
         model: model,
         messages: [
@@ -268,12 +301,13 @@ export async function handleBioTranslate(payload) {
           { role: 'user', content: maskedText }
         ],
         temperature: 0.2
-      })
+      }),
+      signal: AbortSignal.timeout(30000)
     });
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || `大模型端点响应异常: HTTP ${response.status}`);
+      throw new Error(redactSensitiveText(err.error?.message || `大模型端点响应异常: HTTP ${response.status}`, [apiKey]));
     }
 
     const resData = await response.json();

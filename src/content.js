@@ -100,7 +100,8 @@ import {
     .ios-panel {
       position: fixed;
       pointer-events: auto;
-      width: 360px;
+      width: 380px;
+      min-width: 300px;
       min-height: 160px;
       border-radius: 20px;
       border: 1px solid rgba(255, 255, 255, 0.4);
@@ -149,40 +150,77 @@ import {
 
     /* 面板头部 */
     .panel-header {
-      padding: 12px 14px 10px 14px;
+      padding: 9px 10px 8px 10px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 6px;
       border-bottom: 1px solid rgba(0, 0, 0, 0.05);
       cursor: move;
       user-select: none;
+      box-sizing: border-box;
+      min-width: 0;
     }
 
     .panel-logo {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       font-weight: 600;
-      font-size: 13.5px;
+      font-size: 13px;
       color: #1c1c1e;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    .panel-logo span {
+      white-space: nowrap;
     }
 
     .panel-actions {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
+      min-width: 0;
+      flex: 1;
+      justify-content: flex-end;
     }
 
     .panel-select {
       background: rgba(0, 0, 0, 0.05);
       border: none;
       border-radius: 8px;
-      padding: 3px 8px;
+      padding: 3px 5px;
       font-size: 11.5px;
       color: #3a3a3c;
       outline: none;
       cursor: pointer;
       font-weight: 500;
+      min-width: 0;
+      max-width: 100%;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      overflow: hidden;
+      box-sizing: border-box;
+      flex-shrink: 1;
+    }
+
+    #panel-target-lang {
+      max-width: 78px;
+      min-width: 54px;
+      flex: 0 1 auto;
+    }
+
+    #panel-engine-select {
+      max-width: 90px;
+      min-width: 58px;
+      flex: 0 1 auto;
+    }
+
+    #panel-model-select {
+      max-width: 112px;
+      min-width: 64px;
+      flex: 1 1 auto;
     }
 
     .panel-close {
@@ -197,6 +235,7 @@ import {
       align-items: center;
       justify-content: center;
       transition: background 0.15s ease, color 0.15s ease;
+      flex-shrink: 0;
     }
 
     .panel-close:hover {
@@ -215,6 +254,7 @@ import {
       align-items: center;
       justify-content: center;
       transition: all 0.15s ease;
+      flex-shrink: 0;
     }
 
     .panel-icon-btn:hover {
@@ -487,7 +527,7 @@ import {
           <span>翻译</span>
         </div>
         <div class="panel-actions">
-          <select id="panel-target-lang" class="panel-select" style="max-width: 82px;" title="目标语言"></select>
+          <select id="panel-target-lang" class="panel-select" title="目标语言"></select>
           <select id="panel-engine-select" class="panel-select">
             <option value="google">Google</option>
           </select>
@@ -583,11 +623,12 @@ import {
   chrome.storage.local.get({ pdfAction: 'native' }, (res) => {
     if (res && res.pdfAction) cachedPdfAction = res.pdfAction;
   });
-  chrome.storage.onChanged.addListener((changes, area) => {
+  const handlePdfActionStorageChange = (changes, area) => {
     if (area === 'local' && changes.pdfAction) {
       cachedPdfAction = changes.pdfAction.newValue || 'native';
     }
-  });
+  };
+  chrome.storage.onChanged.addListener(handlePdfActionStorageChange);
 
   // 填充面板目标语言下拉
   if (panelTargetLang) {
@@ -609,8 +650,8 @@ import {
   const handleRight = shadowRoot.querySelector('.resize-handle-right');
 
   // 从 storage 读取并恢复用户偏好的浮窗宽度
-  chrome.storage.local.get({ contentPanelWidth: 360 }, (res) => {
-    if (res.contentPanelWidth && res.contentPanelWidth >= 280) {
+  chrome.storage.local.get({ contentPanelWidth: 380 }, (res) => {
+    if (res.contentPanelWidth && res.contentPanelWidth >= 300) {
       translatePanel.style.width = `${res.contentPanelWidth}px`;
     }
   });
@@ -631,8 +672,8 @@ import {
         newWidth = startWidth - (moveEvent.clientX - startX);
       }
 
-      // 限制宽度范围：280px ~ 680px
-      newWidth = Math.max(280, Math.min(680, newWidth));
+      // 限制宽度范围：300px ~ 720px
+      newWidth = Math.max(300, Math.min(720, newWidth));
       translatePanel.style.width = `${newWidth}px`;
 
       if (direction === 'left') {
@@ -707,50 +748,28 @@ import {
   // AI 模型字典
   const AI_MODELS = { ...CONST_AI_MODELS };
 
-  // 4. 动态加载可用引擎列表
+  // 4. 动态加载可用引擎列表（通过后台安全查询，不向页面内容脚本暴露任何原始 API Key）
   function loadAvailableEngines(callback) {
-    chrome.storage.local.get({
-      glmApiKey: '',
-      glmModels: null,
-      geminiApiKey: '',
-      deepseekApiKey: '',
-      deeplApiKey: '',
-      deeplEndpoint: '',
-      youdaoAppKey: '',
-      youdaoAppSecret: '',
-      customModels: []
-    }, (result) => {
-      if (Array.isArray(result.glmModels) && result.glmModels.length > 0) AI_MODELS.glm = result.glmModels;
+    chrome.runtime.sendMessage({ action: 'getAvailableEngines' }, (res) => {
+      if (chrome.runtime.lastError || !res || !res.success) {
+        if (callback) callback();
+        return;
+      }
+
+      if (Array.isArray(res.glmModels) && res.glmModels.length > 0) AI_MODELS.glm = res.glmModels;
+      if (Array.isArray(res.geminiModels) && res.geminiModels.length > 0) AI_MODELS.gemini = res.geminiModels;
+      if (Array.isArray(res.deepseekModels) && res.deepseekModels.length > 0) AI_MODELS.deepseek = res.deepseekModels;
 
       const currentVal = panelEngineSelect.value;
       panelEngineSelect.innerHTML = '';
 
-      const available = [
-        { value: 'google', label: 'Google' },
-        { value: 'bing', label: 'Bing' }
-      ];
-
-      if (result.geminiApiKey && result.geminiApiKey.trim()) {
-        available.push({ value: 'gemini', label: 'Google Gemini' });
-      }
-      if (result.deepseekApiKey && result.deepseekApiKey.trim()) {
-        available.push({ value: 'deepseek', label: 'DeepSeek' });
-      }
-      if (result.glmApiKey && result.glmApiKey.trim()) {
-        available.push({ value: 'glm', label: '智谱GLM' });
-      }
-      if ((result.deeplApiKey && result.deeplApiKey.trim()) || (result.deeplEndpoint && result.deeplEndpoint.trim())) {
-        available.push({ value: 'deepl', label: 'DeepL' });
-      }
-      if (result.youdaoAppKey && result.youdaoAppSecret && result.youdaoAppKey.trim() && result.youdaoAppSecret.trim()) {
-        available.push({ value: 'youdao', label: '有道' });
-      }
-
-      (result.customModels || []).forEach(m => {
-        if ((m.apiKey && m.apiKey.trim()) || (m.endpoint && m.endpoint.trim())) {
-          available.push({ value: `custom_${m.id}`, label: m.name });
-        }
-      });
+      const available = (res.engines || [
+        { id: 'google', name: 'Google' },
+        { id: 'bing', name: 'Bing' }
+      ]).map(e => ({
+        value: e.id,
+        label: e.name.replace(/\s*\(免Key\)|\s*\(免费大模型\)|\s*\(大模型\)|\s*\(AI\)/g, '')
+      }));
 
       available.forEach(item => {
         const opt = document.createElement('option');
@@ -773,14 +792,15 @@ import {
   loadAvailableEngines();
 
   // 监听 storage 变更，及时更新可用引擎及双语按钮状态
-  chrome.storage.onChanged.addListener((changes) => {
+  const handleEngineStorageChange = (changes) => {
     loadAvailableEngines();
     if (changes.enableBilingualNotation && panelBilingualBtn) {
       const isBilingual = changes.enableBilingualNotation.newValue !== false;
       panelBilingualBtn.classList.toggle('active', isBilingual);
       panelBilingualBtn.title = isBilingual ? '专有名词双语备注：开启中（点击切换）' : '专有名词双语备注：已关闭（点击切换）';
     }
-  });
+  };
+  chrome.storage.onChanged.addListener(handleEngineStorageChange);
 
   // 读取偏好设置
   function getSettings(callback) {
@@ -1343,20 +1363,8 @@ import {
   };
   document.addEventListener('mouseup', handleDragMouseUp);
 
-  // 实例清理钩子 (支持插件热重载与无刷新重注)
-  window.__iosTranslateCleanup = () => {
-    try { host.remove(); } catch (e) {}
-    document.removeEventListener('mouseup', handleMouseUp);
-    document.removeEventListener('mousedown', handleMouseDown);
-    document.removeEventListener('mousemove', handleMouseMove);
-    document.removeEventListener('mouseup', handleDragMouseUp);
-    try {
-      chrome.runtime.onMessage.removeListener(messageListener);
-    } catch (e) {}
-  };
-
   // PDF 链接拦截功能 (同步精确拦截，彻底根除异步 defaultPrevented 失效)
-  document.addEventListener('click', (e) => {
+  const handlePdfLinkClick = (e) => {
     const link = e.target.closest('a');
     if (!link) return;
 
@@ -1376,7 +1384,8 @@ import {
         }
       }
     }
-  });
+  };
+  document.addEventListener('click', handlePdfLinkClick);
 
   // PDF Modal 交互处理
   pdfOptExtension.addEventListener('click', () => {
@@ -1403,7 +1412,7 @@ import {
   });
 
   // Escape 键快捷关闭浮层
-  document.addEventListener('keydown', (e) => {
+  const handleKeyDown = (e) => {
     if (e.key === 'Escape') {
       if (!pdfModal.classList.contains('hidden')) {
         pdfModal.classList.add('hidden');
@@ -1415,5 +1424,22 @@ import {
         hideIcon();
       }
     }
-  });
+  };
+  document.addEventListener('keydown', handleKeyDown);
+
+  // 实例清理钩子 (支持插件热重载与无刷新重注，彻底移除全部事件与 Storage 监听器)
+  window.__iosTranslateCleanup = () => {
+    try { host.remove(); } catch (e) {}
+    document.removeEventListener('mouseup', handleMouseUp);
+    document.removeEventListener('mousedown', handleMouseDown);
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', handleDragMouseUp);
+    document.removeEventListener('click', handlePdfLinkClick);
+    document.removeEventListener('keydown', handleKeyDown);
+    try {
+      chrome.runtime.onMessage.removeListener(messageListener);
+      chrome.storage.onChanged.removeListener(handlePdfActionStorageChange);
+      chrome.storage.onChanged.removeListener(handleEngineStorageChange);
+    } catch (e) {}
+  };
 })();

@@ -48,6 +48,24 @@ function formatMatchedTermRule(t, isSelection = false) {
 export function buildBioSystemPrompt(matchedTerms = [], targetLang = 'zh-CN', persona = 'biochem', isSelection = false, sourceLang = 'auto') {
   const langName = getLangPromptName(targetLang);
   const srcPart = sourceLang && sourceLang !== 'auto' ? `将提供的待翻译 ${sourceLang} ` : '将提供的待翻译';
+  const isChineseTarget = !targetLang || targetLang === 'zh-CN' || targetLang === 'zh-TW' || targetLang.startsWith('zh');
+
+  // 非中文目标语言分支：避免中文审定名与汉字规范污染英文/日文/韩文等目标语输出
+  if (!isChineseTarget) {
+    const nonZhCoreRules = `
+【翻译核心执行铁律与排版契约 (绝对强制遵守)】:
+1. 数字与科学符号保真：所有阿拉伯数字、小数、百分比、科学计数法、SI 国际标准单位及特殊符号（如 λ, 5', 3', ΔG°, ΔTm, →）必须 100% 保持原始形态。
+2. 排版与行数一致：若输入包含换行符 \\n，译文必须保持相同的行数与换行结构。
+3. 占位符严禁篡改：文本中包含的形如 "__NUM_0__"、"__BIO_SYM_0__" 或 "__SAFE_PII_0__" 的占位符，必须原样保留在译文对应的逻辑位置，严禁翻译、拆解、改动或丢弃。`;
+
+    if (persona === 'general') {
+      return `你是一名资深的多语言翻译专家。\n任务：请${srcPart}文本精准、自然、地道地翻译为${langName}，完全符合${langName}母语者的阅读习惯。\n${nonZhCoreRules}`;
+    }
+    if (persona === 'economics') {
+      return `你是一名国际顶级经济学与金融学期刊 (AER/JPE/QJE/JF) 的资深学术评审与翻译专家。\n任务：请${srcPart}学术文献精准、严谨、规范地翻译为${langName}，严格符合${langName}经济学与金融学学术出版规范。\n${nonZhCoreRules}`;
+    }
+    return `你是一名国际顶级期刊 (Nature/Cell/JACS) 的资深生化与分子生物学文献学术评审与翻译专家。\n任务：请${srcPart}学术文献精准严谨地翻译为${langName}，严格符合${langName}生物化学与分子生物学国际期刊规范。\n${nonZhCoreRules}`;
+  }
 
   const termRule = isSelection
     ? `2. 核心学科专业词汇双语对照标注规范（划词翻译专属）：对于关键学术专有名词、核心术语及专业缩写（如本段命中的学科专有名词强制对齐表中的条目，以及单核苷酸变异、野生型、趾步介导的链置换、分子信标、λ-外切核酸酶等核心学术概念），译文必须输出为【中文定名 (英文原文/缩写)】的双语标注形态（例如：'单核苷酸变异 (single nucleotide variant, SNV)'、'野生型 (wild-type, WT)'、'λ-外切核酸酶 (λ-exonuclease)'），在中文定名旁边必须紧随半角圆括号备注其英文原文或缩写，确保学术查阅与原文索引精准对应。`

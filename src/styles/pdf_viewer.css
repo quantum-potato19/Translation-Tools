@@ -2103,12 +2103,17 @@ input:checked + .slider:before {
   font-size: 13px;
   letter-spacing: -0.2px;
   color: #1f2937;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .panel-actions {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  flex: 1;
+  justify-content: flex-end;
 }
 
 .panel-select {
@@ -2121,6 +2126,11 @@ input:checked + .slider:before {
   border-radius: 6px;
   color: #374151;
   cursor: pointer;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  flex-shrink: 1;
 }
 
 .panel-close {
@@ -2134,6 +2144,7 @@ input:checked + .slider:before {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  flex-shrink: 0;
   font-size: 11px;
   font-weight: bold;
   transition: all 0.15s ease;

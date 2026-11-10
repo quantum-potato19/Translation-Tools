@@ -20,6 +20,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (targetPane) {
         targetPane.classList.add('active');
       }
+      if (tabName === 'engines') {
+        loadTokenMonitorStats();
+      }
       if (tabName === 'storage') {
         renderStorageStats();
       }
@@ -39,13 +42,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const defaultEngine = document.getElementById('default-engine');
   const saveToast = document.getElementById('save-toast');
   
-  // 核心 AI 引擎 (智谱 GLM 永久免费、Google Gemini 终身免费额度、DeepSeek 高性价比)
+  // 核心 AI 引擎 (默认展示智谱 GLM 永久免费)
   const glmApiKey = document.getElementById('glm-api-key');
   const glmModel = document.getElementById('glm-model');
-  const geminiApiKey = document.getElementById('gemini-api-key');
-  const geminiModel = document.getElementById('gemini-model');
-  const deepseekApiKey = document.getElementById('deepseek-api-key');
-  const deepseekModel = document.getElementById('deepseek-model');
 
   // DeepL 与 有道词典
   const deeplApiKey = document.getElementById('deepl-api-key');
@@ -116,6 +115,12 @@ document.addEventListener('DOMContentLoaded', () => {
       defaultModel: 'deepseek-chat',
       placeholder: 'sk-... (DeepSeek 官方 API Key)'
     },
+    gemini: {
+      endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+      aliasPrefix: 'Gemini',
+      defaultModel: 'gemini-2.5-flash',
+      placeholder: 'AIzaSy... (Google Gemini API Key)'
+    },
     openrouter: {
       endpoint: 'https://openrouter.ai/api/v1/chat/completions',
       aliasPrefix: 'OpenRouter',
@@ -183,10 +188,6 @@ document.addEventListener('DOMContentLoaded', () => {
       glmApiKey: '',
       glmActiveModel: 'glm-4-flash',
       glmModels: DEFAULT_MODELS.glm,
-      geminiApiKey: '',
-      geminiActiveModel: 'gemini-2.5-flash',
-      deepseekApiKey: '',
-      deepseekActiveModel: 'deepseek-chat',
       deeplApiKey: '',
       deeplEndpoint: '',
       youdaoAppKey: '',
@@ -203,10 +204,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (defaultTargetLang) defaultTargetLang.value = settings.defaultTargetLang;
       
       if (glmApiKey) glmApiKey.value = settings.glmApiKey || '';
-      if (geminiApiKey) geminiApiKey.value = settings.geminiApiKey || '';
-      if (geminiModel) geminiModel.value = settings.geminiActiveModel || 'gemini-2.5-flash';
-      if (deepseekApiKey) deepseekApiKey.value = settings.deepseekApiKey || '';
-      if (deepseekModel) deepseekModel.value = settings.deepseekActiveModel || 'deepseek-chat';
       if (deeplApiKey) deeplApiKey.value = settings.deeplApiKey || '';
       if (deeplEndpoint) deeplEndpoint.value = settings.deeplEndpoint || '';
       if (youdaoAppKey) youdaoAppKey.value = settings.youdaoAppKey || '';
@@ -275,9 +272,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const isDefault = (m === selectEl.value);
       const isFree = (provider === 'glm') && m.toLowerCase().includes('flash');
 
+      const safeModelId = escapeHtml(m);
       row.innerHTML = `
-        <input type="checkbox" value="${m}" ${isChecked ? 'checked' : ''}>
-        <span class="model-item-name" title="${m}">${m}</span>
+        <input type="checkbox" value="${safeModelId}" ${isChecked ? 'checked' : ''}>
+        <span class="model-item-name" title="${safeModelId}">${safeModelId}</span>
         ${isFree ? '<span class="model-item-free-tag">免费</span>' : ''}
         ${isDefault ? '<span class="model-item-tag">默认</span>' : ''}
       `;
@@ -503,10 +501,6 @@ document.addEventListener('DOMContentLoaded', () => {
       translationPersona: translationPersona ? translationPersona.value : DEFAULT_PERSONA,
       glmApiKey: glmApiKey ? glmApiKey.value.trim() : '',
       glmActiveModel: glmModel ? glmModel.value : 'glm-4-flash',
-      geminiApiKey: geminiApiKey ? geminiApiKey.value.trim() : '',
-      geminiActiveModel: geminiModel ? geminiModel.value : 'gemini-2.5-flash',
-      deepseekApiKey: deepseekApiKey ? deepseekApiKey.value.trim() : '',
-      deepseekActiveModel: deepseekModel ? deepseekModel.value : 'deepseek-chat',
       deeplApiKey: deeplApiKey ? deeplApiKey.value.trim() : '',
       deeplEndpoint: deeplEndpoint ? deeplEndpoint.value.trim() : '',
       youdaoAppKey: youdaoAppKey ? youdaoAppKey.value.trim() : '',
@@ -529,18 +523,6 @@ document.addEventListener('DOMContentLoaded', () => {
       { value: 'google', label: 'Google 翻译 (免 Key)' },
       { value: 'bing', label: 'Bing 翻译 (免 Key·微软)' }
     ];
-
-    // Google Gemini
-    if (geminiApiKey && geminiApiKey.value.trim()) {
-      const model = geminiModel ? geminiModel.value : 'gemini-2.5-flash';
-      available.push({ value: 'gemini', label: `Google Gemini (${model})` });
-    }
-
-    // DeepSeek
-    if (deepseekApiKey && deepseekApiKey.value.trim()) {
-      const model = deepseekModel ? deepseekModel.value : 'deepseek-chat';
-      available.push({ value: 'deepseek', label: `DeepSeek (${model})` });
-    }
 
     // DeepL 翻译 (仅在配置了 Auth Key 或 自定义 Endpoint 时显示)
     if ((deeplApiKey && deeplApiKey.value.trim()) || (deeplEndpoint && deeplEndpoint.value.trim())) {
@@ -586,7 +568,7 @@ document.addEventListener('DOMContentLoaded', () => {
     customModelsList.innerHTML = '';
 
     if (customModels.length === 0) {
-      customModelsList.innerHTML = `<span style="font-size: 13px; color: #8e8e93;">暂无自定义模型。点击上方“+ 添加自定义模型”可接入 OpenRouter、OpenCode、OpenAI 或任意兼容服务。</span>`;
+      customModelsList.innerHTML = `<span style="font-size: 13px; color: #8e8e93;">暂无自定义模型。点击上方“+ 添加自定义模型”可接入 DeepSeek、Gemini、OpenRouter、OpenAI 或任意兼容服务。</span>`;
       return;
     }
 
@@ -601,15 +583,19 @@ document.addEventListener('DOMContentLoaded', () => {
       item.style.fontSize = '13.5px';
       item.style.border = '1px solid rgba(0,0,0,0.03)';
       
+      const safeName = escapeHtml(m.name);
+      const safeModelName = escapeHtml(m.modelName);
+      const safeEndpoint = escapeHtml(m.endpoint);
+      const safeId = escapeHtml(m.id);
       item.innerHTML = `
         <div style="display:flex; flex-direction:column; gap:2px;">
-          <span style="font-weight:600; color:#1c1c1e;">${m.name} <span style="font-size:10.5px; font-weight:normal; background:rgba(0,122,255,0.1); color:#007AFF; padding:1px 6px; border-radius:4px; margin-left:4px;">${m.modelName}</span></span>
-          <span style="font-size:11.5px; color:#8e8e93; font-family:monospace; max-width: 320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${m.endpoint}</span>
+          <span style="font-weight:600; color:#1c1c1e;">${safeName} <span style="font-size:10.5px; font-weight:normal; background:rgba(0,122,255,0.1); color:#007AFF; padding:1px 6px; border-radius:4px; margin-left:4px;">${safeModelName}</span></span>
+          <span style="font-size:11.5px; color:#8e8e93; font-family:monospace; max-width: 320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${safeEndpoint}</span>
           <span class="custom-item-status" style="font-size:11px; margin-top:2px;"></span>
         </div>
         <div style="display:flex; gap:6px; align-items:center;">
-          <button class="ios-button secondary-btn custom-item-test-btn" style="padding:5px 10px; font-size:12px;" data-id="${m.id}">测试</button>
-          <button class="ios-button custom-item-delete-btn" style="background:rgba(255,59,48,0.1); color:#FF3B30; padding:5px 10px; font-size:12px;" data-id="${m.id}">删除</button>
+          <button class="ios-button secondary-btn custom-item-test-btn" style="padding:5px 10px; font-size:12px;" data-id="${safeId}">测试</button>
+          <button class="ios-button custom-item-delete-btn" style="background:rgba(255,59,48,0.1); color:#FF3B30; padding:5px 10px; font-size:12px;" data-id="${safeId}">删除</button>
         </div>
       `;
 
@@ -661,7 +647,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // 监听输入并实时保存及动态刷新默认引擎列表
   const inputsToWatch = [
     translationPersona, enableSelectionTranslate, autoShowPanel, enableBilingualNotation, triggerMode, defaultTargetLang, defaultEngine,
-    glmApiKey, glmModel, geminiApiKey, geminiModel, deepseekApiKey, deepseekModel,
+    glmApiKey, glmModel,
     deeplApiKey, deeplEndpoint, youdaoAppKey, youdaoAppSecret, pdfAction
   ].filter(Boolean);
 
@@ -837,7 +823,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const chip = document.createElement('span');
       chip.className = 'selected-model-chip';
       chip.innerHTML = `
-        <span>${id}</span>
+        <span>${escapeHtml(id)}</span>
         <button type="button" class="chip-remove-btn" title="移除此模型">✕</button>
       `;
 
@@ -906,10 +892,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const isSelected = selectedModelMap.has(item.id);
       const row = document.createElement('div');
       row.className = 'picker-item';
+      const safeItemId = escapeHtml(item.id);
+      const safeItemName = escapeHtml(item.name);
       row.innerHTML = `
         <div class="picker-item-info">
-          <span class="picker-item-id">${item.id}</span>
-          ${item.name && item.name !== item.id ? `<span class="picker-item-desc">${item.name}</span>` : ''}
+          <span class="picker-item-id">${safeItemId}</span>
+          ${item.name && item.name !== item.id ? `<span class="picker-item-desc">${safeItemName}</span>` : ''}
         </div>
         <button type="button" class="picker-add-btn ${isSelected ? 'added' : ''}">
           ${isSelected ? '✓ 已添加' : '+ 添加'}
@@ -1241,21 +1229,24 @@ document.addEventListener('DOMContentLoaded', () => {
           storageDocsTbody.innerHTML = '';
           stats.docs.forEach((doc) => {
             const tr = document.createElement('tr');
+            const safeTitle = escapeHtml(doc.title);
+            const safeDocId = escapeHtml(doc.id);
+            const safeDocIdShort = escapeHtml((doc.id || '').substring(0, 36));
             tr.innerHTML = `
               <td>
-                <span class="storage-doc-title" title="${doc.title}">${doc.title}</span>
-                <span class="storage-doc-id" title="${doc.id}">${doc.id.substring(0, 36)}...</span>
+                <span class="storage-doc-title" title="${safeTitle}">${safeTitle}</span>
+                <span class="storage-doc-id" title="${safeDocId}">${safeDocIdShort}...</span>
               </td>
-              <td>${doc.numPages ? `${doc.numPages} 页` : '-'}</td>
+              <td>${doc.numPages ? `${Number(doc.numPages) || 0} 页` : '-'}</td>
               <td>
                 <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                  <span class="storage-badge trans">${doc.transPagesCount} 页译文</span>
-                  <span class="storage-badge draw">${doc.drawPagesCount} 页批注</span>
+                  <span class="storage-badge trans">${Number(doc.transPagesCount) || 0} 页译文</span>
+                  <span class="storage-badge draw">${Number(doc.drawPagesCount) || 0} 页批注</span>
                 </div>
               </td>
-              <td style="font-size: 12px; color: #64748b;">${formatTimestamp(doc.updatedAt)}</td>
+              <td style="font-size: 12px; color: #64748b;">${escapeHtml(formatTimestamp(doc.updatedAt))}</td>
               <td style="text-align: center;">
-                <button type="button" class="doc-del-btn" data-doc-id="${doc.id}" title="删除该篇文献的所有本地缓存">删除</button>
+                <button type="button" class="doc-del-btn" data-doc-id="${safeDocId}" title="删除该篇文献的所有本地缓存">删除</button>
               </td>
             `;
             storageDocsTbody.appendChild(tr);
@@ -1547,8 +1538,107 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // --- Token 用量与防滥用监控模块 DOM 绑定 ---
+  const tokenStatTodayTokens = document.getElementById('token-stat-today-tokens');
+  const tokenStatTodayCalls = document.getElementById('token-stat-today-calls');
+  const tokenStatTotalTokens = document.getElementById('token-stat-total-tokens');
+  const tokenProgressText = document.getElementById('token-progress-text');
+  const tokenProgressBar = document.getElementById('token-progress-bar');
+  const tokenWarnLimitInput = document.getElementById('token-warn-limit-input');
+  const tokenHardLimitInput = document.getElementById('token-hard-limit-input');
+  const tokenResetTodayBtn = document.getElementById('token-reset-today-btn');
+  const tokenResetAllBtn = document.getElementById('token-reset-all-btn');
+
+  function renderTokenStats(stats) {
+    if (!stats) return;
+    const todayTokens = Number(stats.todayTokens) || 0;
+    const todayCalls = Number(stats.todayCalls) || 0;
+    const totalTokens = Number(stats.totalTokens) || 0;
+    const warnLimit = Number(stats.dailyTokenWarnLimit) || 50000;
+    const hardLimit = Number(stats.dailyTokenHardLimit) || 200000;
+
+    if (tokenStatTodayTokens) tokenStatTodayTokens.textContent = todayTokens.toLocaleString();
+    if (tokenStatTodayCalls) tokenStatTodayCalls.textContent = `${todayCalls} 次`;
+    if (tokenStatTotalTokens) tokenStatTotalTokens.textContent = totalTokens.toLocaleString();
+
+    if (tokenProgressText) {
+      tokenProgressText.textContent = `${todayTokens.toLocaleString()} / ${warnLimit.toLocaleString()} Tokens`;
+    }
+    if (tokenProgressBar) {
+      const pct = Math.min(100, Math.round((todayTokens / (warnLimit || 1)) * 100));
+      tokenProgressBar.style.width = `${pct}%`;
+      if (pct >= 100) {
+        tokenProgressBar.style.background = '#FF3B30';
+      } else if (pct >= 80) {
+        tokenProgressBar.style.background = '#FF9500';
+      } else {
+        tokenProgressBar.style.background = 'linear-gradient(90deg, #34C759, #30B0C7)';
+      }
+    }
+
+    if (tokenWarnLimitInput && document.activeElement !== tokenWarnLimitInput) {
+      tokenWarnLimitInput.value = warnLimit;
+    }
+    if (tokenHardLimitInput && document.activeElement !== tokenHardLimitInput) {
+      tokenHardLimitInput.value = hardLimit;
+    }
+  }
+
+  function loadTokenMonitorStats() {
+    chrome.runtime.sendMessage({ action: 'getTokenStats' }, (res) => {
+      if (chrome.runtime.lastError || !res || !res.success) return;
+      renderTokenStats(res.stats);
+    });
+  }
+
+  if (tokenWarnLimitInput || tokenHardLimitInput) {
+    const onLimitChange = () => {
+      const warnVal = Math.max(0, parseInt(tokenWarnLimitInput ? tokenWarnLimitInput.value : 50000, 10) || 50000);
+      const hardVal = Math.max(0, parseInt(tokenHardLimitInput ? tokenHardLimitInput.value : 0, 10) || 0);
+      chrome.runtime.sendMessage({
+        action: 'updateTokenLimits',
+        dailyTokenWarnLimit: warnVal,
+        dailyTokenHardLimit: hardVal
+      }, (res) => {
+        if (res && res.success) {
+          renderTokenStats(res.stats);
+          showSaveToast();
+        }
+      });
+    };
+    if (tokenWarnLimitInput) tokenWarnLimitInput.addEventListener('change', onLimitChange);
+    if (tokenHardLimitInput) tokenHardLimitInput.addEventListener('change', onLimitChange);
+  }
+
+  if (tokenResetTodayBtn) {
+    tokenResetTodayBtn.addEventListener('click', () => {
+      if (confirm('确定要将今日 Token 消耗统计清零吗？（每日预警将重新从 0 开始计算）')) {
+        chrome.runtime.sendMessage({ action: 'resetTokenStats', scope: 'today' }, (res) => {
+          if (res && res.success) {
+            renderTokenStats(res.stats);
+            showSaveToast();
+          }
+        });
+      }
+    });
+  }
+
+  if (tokenResetAllBtn) {
+    tokenResetAllBtn.addEventListener('click', () => {
+      if (confirm('确定要清空全部历史 Token 统计吗？此操作不可逆。')) {
+        chrome.runtime.sendMessage({ action: 'resetTokenStats', scope: 'all' }, (res) => {
+          if (res && res.success) {
+            renderTokenStats(res.stats);
+            showSaveToast();
+          }
+        });
+      }
+    });
+  }
+
   // 初始化加载
   loadSettings();
+  loadTokenMonitorStats();
   if (window.location.hash === '#storage') {
     const storageTabBtn = document.querySelector('[data-tab="storage"]');
     if (storageTabBtn) storageTabBtn.click();

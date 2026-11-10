@@ -6,8 +6,23 @@ import {
   getLangPromptName,
   isChineseLangCode,
   USER_GLOSSARY_KEY,
-  isAIEngineId
+  isAIEngineId,
+  redactSensitiveText,
+  TOKEN_STATS_STORAGE_KEY,
+  TOKEN_LIMIT_DEFAULTS,
+  estimateTokenCount
 } from './shared/constants.js';
+
+function isLocalEndpoint(endpoint) {
+  if (!endpoint || typeof endpoint !== 'string') return false;
+  try {
+    const u = new URL(endpoint.trim());
+    const h = u.hostname.toLowerCase();
+    return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1';
+  } catch (e) {
+    return false;
+  }
+}
 
 // 初始化加载用户自定义术语库并监听实时变化
 if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
@@ -23,6 +38,133 @@ if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
     }
   });
 }
+
+// --- AI Token 用量统计与防滥用监控模块 (极致轻量，零外部依赖，防超额熔断) ---
+const burstCallRecords = []; // 60s 内调用滑动窗口: [{ timestamp, tokens }]
+let lastBurstAlertTime = 0;
+let lastDailyWarnAlertDate = '';
+
+function getTodayDateStr() {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+async function getTokenStatsData() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ [TOKEN_STATS_STORAGE_KEY]: null }, (res) => {
+      const today = getTodayDateStr();
+      let data = res[TOKEN_STATS_STORAGE_KEY];
+      if (!data || typeof data !== 'object') {
+        data = {
+          todayDate: today,
+          todayTokens: 0,
+          todayCalls: 0,
+          totalTokens: 0,
+          dailyTokenWarnLimit: TOKEN_LIMIT_DEFAULTS.dailyTokenWarnLimit,
+          dailyTokenHardLimit: TOKEN_LIMIT_DEFAULTS.dailyTokenHardLimit,
+          history: {},
+          byEngine: {}
+        };
+      }
+      // 跨天自动归档与重置
+      if (data.todayDate !== today) {
+        if (data.todayTokens > 0) {
+          if (!data.history) data.history = {};
+          data.history[data.todayDate] = {
+            tokens: data.todayTokens,
+            calls: data.todayCalls
+          };
+          // 仅保留最近 7 天历史记录，严控存储在 1KB 以内
+          const dates = Object.keys(data.history).sort();
+          if (dates.length > 7) {
+            dates.slice(0, dates.length - 7).forEach(k => delete data.history[k]);
+          }
+        }
+        data.todayDate = today;
+        data.todayTokens = 0;
+        data.todayCalls = 0;
+      }
+      resolve(data);
+    });
+  });
+}
+
+// 检查是否超出每日硬限制熔断 (在发起网络请求前调用)
+async function checkTokenLimits(estimatedTokens = 0) {
+  const stats = await getTokenStatsData();
+  const hardLimit = Number(stats.dailyTokenHardLimit) || 0;
+  if (hardLimit > 0 && (stats.todayTokens + estimatedTokens) > hardLimit) {
+    if (chrome.notifications) {
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/icon-48.png',
+        title: 'Translate FY - Token 熔断保护已触发',
+        message: `今日 AI Token 消耗已达安全硬限制 (${stats.todayTokens.toLocaleString()} / ${hardLimit.toLocaleString()})，已自动拦截请求以防超额扣费。`
+      });
+    }
+    throw new Error(`今日 AI Token 消耗 (${stats.todayTokens.toLocaleString()}) 已达到安全硬限制 (${hardLimit.toLocaleString()})，已自动熔断保护。如需继续请在设置中调高限额或重置统计。`);
+  }
+}
+
+// 记录 Token 消耗并触发每日预警或高频突发检测
+async function recordTokenUsage({ engine = 'ai', tokens = 0 }) {
+  const safeTokens = Math.max(1, Math.round(tokens));
+  const now = Date.now();
+
+  // 1. 突发高频调用滑动窗口检测 (过去 60 秒)
+  burstCallRecords.push({ timestamp: now, tokens: safeTokens });
+  const cutoff = now - 60000;
+  while (burstCallRecords.length > 0 && burstCallRecords[0].timestamp < cutoff) {
+    burstCallRecords.shift();
+  }
+
+  const burstCount = burstCallRecords.length;
+  const burstTokens = burstCallRecords.reduce((sum, r) => sum + r.tokens, 0);
+
+  if ((burstCount >= TOKEN_LIMIT_DEFAULTS.burstRpmLimit || burstTokens >= TOKEN_LIMIT_DEFAULTS.burstTokenLimit) && (now - lastBurstAlertTime > 60000)) {
+    lastBurstAlertTime = now;
+    if (chrome.notifications) {
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/icon-48.png',
+        title: 'Translate FY - 突发高频调用预警',
+        message: `检测到 1 分钟内频繁发起 ${burstCount} 次 AI 翻译请求 (约消耗 ${burstTokens.toLocaleString()} Tokens)，请留意 API 额度消耗。`
+      });
+    }
+  }
+
+  // 2. 更新本地持久化统计
+  const stats = await getTokenStatsData();
+  const today = stats.todayDate;
+  stats.todayTokens += safeTokens;
+  stats.todayCalls += 1;
+  stats.totalTokens = (stats.totalTokens || 0) + safeTokens;
+
+  if (!stats.byEngine) stats.byEngine = {};
+  stats.byEngine[engine] = (stats.byEngine[engine] || 0) + safeTokens;
+
+  // 3. 每日用量预警检测
+  const warnLimit = Number(stats.dailyTokenWarnLimit) || 0;
+  if (warnLimit > 0 && stats.todayTokens >= warnLimit && lastDailyWarnAlertDate !== today) {
+    lastDailyWarnAlertDate = today;
+    if (chrome.notifications) {
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/icon-48.png',
+        title: 'Translate FY - 今日 Token 消耗预警',
+        message: `今日 AI Token 消耗已达到 ${stats.todayTokens.toLocaleString()}，已超过预警阈值 (${warnLimit.toLocaleString()})。`
+      });
+    }
+  }
+
+  await new Promise((resolve) => {
+    chrome.storage.local.set({ [TOKEN_STATS_STORAGE_KEY]: stats }, resolve);
+  });
+}
+
 
 const DNR_PDF_RULE_ID = 2001;
 
@@ -341,6 +483,7 @@ async function getBingToken() {
 async function translateBing(text, targetLang, sourceLang = 'auto') {
   const langMap = {
     'zh-CN': 'zh-Hans',
+    'zh-TW': 'zh-Hant',
     'en': 'en',
     'ja': 'ja',
     'ko': 'ko'
@@ -388,6 +531,7 @@ async function translateBing(text, targetLang, sourceLang = 'auto') {
 async function translateDeepL(text, targetLang, apiKey, customEndpoint, sourceLang = 'auto') {
   const langMap = {
     'zh-CN': 'ZH',
+    'zh-TW': 'ZH-HANT',
     'en': 'EN-US',
     'ja': 'JA',
     'ko': 'KO'
@@ -469,10 +613,13 @@ async function translateYoudao(text, targetLang, appKey, appSecret, sourceLang =
 
   let toLang = targetLang;
   if (targetLang === 'zh-CN') toLang = 'zh-CHS';
+  else if (targetLang === 'zh-TW') toLang = 'zh-CHT';
 
   let fromLang = 'auto';
   if (sourceLang && sourceLang !== 'auto') {
-    fromLang = sourceLang === 'zh-CN' ? 'zh-CHS' : sourceLang;
+    if (sourceLang === 'zh-CN') fromLang = 'zh-CHS';
+    else if (sourceLang === 'zh-TW') fromLang = 'zh-CHT';
+    else fromLang = sourceLang;
   }
 
   const salt = Date.now().toString();
@@ -824,9 +971,9 @@ ${termRule}
 
 // Google Gemini 官方接口翻译 (终身免费额度，支持上下文语境与学科角色术语对齐)
 async function translateGemini(text, targetLang, apiKey, modelName, context = null, persona = DEFAULT_PERSONA, customPersonaPrompts = {}, enableBilingual = true, sourceLang = 'auto') {
-  if (!apiKey) throw new Error('未配置 Gemini API Key，请在设置中配置');
+  if (!apiKey || !apiKey.trim()) throw new Error('未配置 Gemini API Key，请在设置中配置');
   const cleanModel = (modelName || 'gemini-2.0-flash').replace(/^models\//, '');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent`;
   const activePersona = persona || DEFAULT_PERSONA;
 
   const { maskedText, tokenMap } = maskNumericEntities(text);
@@ -845,9 +992,15 @@ async function translateGemini(text, targetLang, apiKey, modelName, context = nu
     matchedTerms
   });
 
+  const estPromptTokens = estimateTokenCount(promptObj.geminiPrompt);
+  await checkTokenLimits(estPromptTokens);
+
   const res = await fetchWithTimeout(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey.trim()
+    },
     body: JSON.stringify({
       contents: [{ parts: [{ text: promptObj.geminiPrompt }] }]
     })
@@ -855,21 +1008,25 @@ async function translateGemini(text, targetLang, apiKey, modelName, context = nu
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || `Gemini API 错误: ${res.status}`);
+    throw new Error(redactSensitiveText(errorData.error?.message || `Gemini API 错误: ${res.status}`, [apiKey]));
   }
 
   const data = await res.json();
   if (data.candidates && data.candidates[0]?.content?.parts[0]) {
     const rawOut = data.candidates[0].content.parts[0].text.trim();
+    const actualTokens = data.usageMetadata?.totalTokenCount || (estPromptTokens + estimateTokenCount(rawOut));
+    recordTokenUsage({ engine: 'gemini', tokens: actualTokens }).catch(() => {});
     return healAcademicSymbols(unmaskNumericEntities(rawOut, tokenMap), activePersona);
   }
   throw new Error('Gemini 没有返回有效翻译内容');
 }
 
-// OpenAI 兼容 API 翻译 (适用于 智谱 GLM, DeepSeek, OpenRouter, OpenCode, 硅基流动, Groq, 自定义模型等)
-async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, modelName, context = null, persona = DEFAULT_PERSONA, customPersonaPrompts = {}, enableBilingual = true, sourceLang = 'auto') {
-  if (!apiKey) throw new Error('该服务未配置 API Key，请在设置中配置');
+// OpenAI 兼容 API 翻译 (适用于 智谱 GLM, DeepSeek, OpenRouter, OpenCode, 硅基流动, Groq, 本地 Ollama, 自定义模型等)
+async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, modelName, context = null, persona = DEFAULT_PERSONA, customPersonaPrompts = {}, enableBilingual = true, sourceLang = 'auto', allowKeyless = false) {
   if (!endpoint) throw new Error('接口地址未配置');
+  if ((!apiKey || !apiKey.trim()) && !allowKeyless && !isLocalEndpoint(endpoint)) {
+    throw new Error('该服务未配置 API Key，请在设置中配置');
+  }
 
   const activePersona = persona || DEFAULT_PERSONA;
   const { maskedText, tokenMap } = maskNumericEntities(text);
@@ -888,12 +1045,17 @@ async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, mod
     matchedTerms
   });
 
+  const estPromptTokens = promptObj.messages.reduce((sum, m) => sum + estimateTokenCount(m.content), 0);
+  await checkTokenLimits(estPromptTokens);
+
   const headers = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${apiKey}`,
     'HTTP-Referer': 'https://github.com/GeoffLeng/Translation-Tools',
     'X-Title': 'Translate FY'
   };
+  if (apiKey && apiKey.trim()) {
+    headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+  }
 
   const res = await fetchWithTimeout(endpoint, {
     method: 'POST',
@@ -907,31 +1069,37 @@ async function translateOpenAICompatible(text, targetLang, apiKey, endpoint, mod
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || `API 错误: ${res.status}`);
+    throw new Error(redactSensitiveText(errorData.error?.message || `API 错误: ${res.status}`, [apiKey]));
   }
 
   const data = await res.json();
   const choice = data.choices && data.choices[0];
   if (choice) {
+    let resultText = '';
     const content = choice.message?.content;
     if (typeof content === 'string' && content.trim()) {
-      return healAcademicSymbols(unmaskNumericEntities(content.trim(), tokenMap), activePersona);
+      resultText = content.trim();
+    } else if (Array.isArray(content)) {
+      resultText = content.map(part => (part && part.text) ? part.text : '').join('').trim();
+    } else if (choice.text && typeof choice.text === 'string' && choice.text.trim()) {
+      resultText = choice.text.trim();
     }
-    if (Array.isArray(content)) {
-      const merged = content.map(part => (part && part.text) ? part.text : '').join('').trim();
-      if (merged) return healAcademicSymbols(unmaskNumericEntities(merged, tokenMap), activePersona);
-    }
-    if (choice.text && typeof choice.text === 'string' && choice.text.trim()) {
-      return healAcademicSymbols(unmaskNumericEntities(choice.text.trim(), tokenMap), activePersona);
+    if (resultText) {
+      const actualTokens = data.usage?.total_tokens || (estPromptTokens + estimateTokenCount(resultText));
+      const engKey = endpoint.includes('bigmodel.cn') ? 'glm' : (endpoint.includes('deepseek.com') ? 'deepseek' : 'ai_custom');
+      recordTokenUsage({ engine: engKey, tokens: actualTokens }).catch(() => {});
+      return healAcademicSymbols(unmaskNumericEntities(resultText, tokenMap), activePersona);
     }
   }
   throw new Error('API 没有返回有效的翻译文本内容');
 }
 
 // 3.5 结构化批量翻译逻辑 (Batch Context Prompting + 滑动窗口跨页断句补齐 + 纯前端权威语料库注入)
-async function translateBatchOpenAICompatible(items, targetLang, apiKey, endpoint, modelName, context = null, persona = 'biochem', customPersonaPrompts = {}) {
-  if (!apiKey) throw new Error('该服务未配置 API Key，请在设置中配置');
+async function translateBatchOpenAICompatible(items, targetLang, apiKey, endpoint, modelName, context = null, persona = 'biochem', customPersonaPrompts = {}, allowKeyless = false) {
   if (!endpoint) throw new Error('接口地址未配置');
+  if ((!apiKey || !apiKey.trim()) && !allowKeyless && !isLocalEndpoint(endpoint)) {
+    throw new Error('该服务未配置 API Key，请在设置中配置');
+  }
 
   const langName = getTargetLangFullName(targetLang, true);
   
@@ -944,10 +1112,12 @@ async function translateBatchOpenAICompatible(items, targetLang, apiKey, endpoin
 
   const headers = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${apiKey}`,
     'HTTP-Referer': 'https://github.com/GeoffLeng/Translation-Tools',
     'X-Title': 'Translate FY'
   };
+  if (apiKey && apiKey.trim()) {
+    headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+  }
 
   // 本地权威学科词库毫秒级多模式匹配 (3,102 条生化词库 / 97 条顶刊经济金融词库)
   const fullText = items.map(it => it.text).join(' ');
@@ -1030,6 +1200,9 @@ ${context.suffix ? `【后置页面开头上下文 (仅作为理解下文句意�
 
   const userPrompt = JSON.stringify(maskedItems.map(item => ({ id: item.id, text: item.text })));
 
+  const estPromptTokens = estimateTokenCount(systemPrompt) + estimateTokenCount(userPrompt);
+  await checkTokenLimits(estPromptTokens);
+
   const res = await fetchWithTimeout(endpoint, {
     method: 'POST',
     headers: headers,
@@ -1045,7 +1218,7 @@ ${context.suffix ? `【后置页面开头上下文 (仅作为理解下文句意�
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || `API 错误: ${res.status}`);
+    throw new Error(redactSensitiveText(errorData.error?.message || `API 错误: ${res.status}`, [apiKey]));
   }
 
   const data = await res.json();
@@ -1059,6 +1232,10 @@ ${context.suffix ? `【后置页面开头上下文 (仅作为理解下文句意�
   }
 
   if (!rawContent) throw new Error('API 没有返回翻译内容');
+
+  const actualTokens = data.usage?.total_tokens || (estPromptTokens + estimateTokenCount(rawContent));
+  const engKey = endpoint.includes('bigmodel.cn') ? 'glm' : (endpoint.includes('deepseek.com') ? 'deepseek' : 'ai_custom');
+  recordTokenUsage({ engine: engKey, tokens: actualTokens }).catch(() => {});
 
   let cleanJson = rawContent.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   try {
@@ -1100,9 +1277,9 @@ ${context.suffix ? `【后置页面开头上下文 (仅作为理解下文句意�
 }
 
 async function translateBatchGemini(items, targetLang, apiKey, modelName, context = null, persona = 'biochem', customPersonaPrompts = {}) {
-  if (!apiKey) throw new Error('未配置 Gemini API Key，请在设置中配置');
+  if (!apiKey || !apiKey.trim()) throw new Error('未配置 Gemini API Key，请在设置中配置');
   const cleanModel = (modelName || 'gemini-2.0-flash').replace(/^models\//, '');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent`;
   const langName = getTargetLangFullName(targetLang, false);
 
   const tokenMaps = new Map();
@@ -1190,9 +1367,15 @@ ${context.suffix ? `【后置页面开头参考 (仅供理解下文，严禁翻�
   prompt += `\n待翻译数据：
 ${JSON.stringify(maskedItems.map(i => ({ id: i.id, text: i.text })))}`;
 
+  const estPromptTokens = estimateTokenCount(prompt);
+  await checkTokenLimits(estPromptTokens);
+
   const res = await fetchWithTimeout(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey.trim()
+    },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }]
     })
@@ -1200,12 +1383,15 @@ ${JSON.stringify(maskedItems.map(i => ({ id: i.id, text: i.text })))}`;
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || `Gemini API 错误: ${res.status}`);
+    throw new Error(redactSensitiveText(errorData.error?.message || `Gemini API 错误: ${res.status}`, [apiKey]));
   }
 
   const data = await res.json();
   const rawContent = data.candidates && data.candidates[0]?.content?.parts[0]?.text?.trim();
   if (!rawContent) throw new Error('Gemini 没有返回翻译内容');
+
+  const actualTokens = data.usageMetadata?.totalTokenCount || (estPromptTokens + estimateTokenCount(rawContent));
+  recordTokenUsage({ engine: 'gemini', tokens: actualTokens }).catch(() => {});
 
   let cleanJson = rawContent.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   try {
@@ -1278,7 +1464,7 @@ async function translateBatchGoogle(items, targetLang) {
 }
 
 async function translateBatchDeepL(items, targetLang, apiKey, customEndpoint) {
-  const langMap = { 'zh-CN': 'ZH', 'en': 'EN-US', 'ja': 'JA', 'ko': 'KO' };
+  const langMap = { 'zh-CN': 'ZH', 'zh-TW': 'ZH-HANT', 'en': 'EN-US', 'ja': 'JA', 'ko': 'KO' };
   const target = langMap[targetLang] || targetLang.toUpperCase();
 
   if (apiKey && apiKey.trim()) {
@@ -1381,22 +1567,26 @@ function deriveModelsUrl(endpoint, fallbackUrl) {
 
 // 4. 服务商可用模型获取逻辑
 async function fetchProviderModels(provider, apiKey, customEndpoint) {
-  if (!apiKey && provider !== 'ollama') throw new Error('请先输入有效的 API Key');
+  if (!apiKey && provider !== 'ollama' && !isLocalEndpoint(customEndpoint)) {
+    throw new Error('请先输入有效的 API Key');
+  }
 
   const defaultHeaders = {
-    'Authorization': `Bearer ${apiKey}`,
     'HTTP-Referer': 'https://github.com/GeoffLeng/Translation-Tools',
     'X-Title': 'Translate FY'
   };
+  if (apiKey && apiKey.trim()) {
+    defaultHeaders['Authorization'] = `Bearer ${apiKey.trim()}`;
+  }
 
   // 1) 智谱 GLM（4/4.5/4.7 flash 免费）
   if (provider === 'glm') {
     const res = await fetchWithTimeout('https://open.bigmodel.cn/api/paas/v4/models', {
-      headers: { 'Authorization': `Bearer ${apiKey}` }
+      headers: { 'Authorization': `Bearer ${apiKey.trim()}` }
     }, 12000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `智谱 GLM 请求失败: HTTP ${res.status}`);
+      throw new Error(redactSensitiveText(err.error?.message || `智谱 GLM 请求失败: HTTP ${res.status}`, [apiKey]));
     }
     const data = await res.json();
     const fetchedList = (data.data && Array.isArray(data.data)) ? data.data.map(m => m.id) : [];
@@ -1418,13 +1608,15 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
     });
   }
 
-  // 2) Google Gemini (终身免费额度)
+  // 2) Google Gemini (终身免费额度) — 密钥放 Header 避免 URL 参数泄露
   if (provider === 'gemini') {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
-    const res = await fetchWithTimeout(url, {}, 12000);
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models';
+    const res = await fetchWithTimeout(url, {
+      headers: { 'x-goog-api-key': apiKey.trim() }
+    }, 12000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `Gemini 请求失败: HTTP ${res.status}`);
+      throw new Error(redactSensitiveText(err.error?.message || `Gemini 请求失败: HTTP ${res.status}`, [apiKey]));
     }
     const data = await res.json();
     if (!data.models || !Array.isArray(data.models)) throw new Error('Gemini 未返回模型列表');
@@ -1438,11 +1630,11 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
   if (provider === 'deepseek') {
     const url = deriveModelsUrl(customEndpoint, 'https://api.deepseek.com/models');
     const res = await fetchWithTimeout(url, {
-      headers: { 'Authorization': `Bearer ${apiKey}` }
+      headers: { 'Authorization': `Bearer ${apiKey.trim()}` }
     }, 12000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      const msg = err.error?.message || err.message || '';
+      const msg = redactSensitiveText(err.error?.message || err.message || '', [apiKey]);
       throw new Error(`DeepSeek 鉴权失败 (HTTP ${res.status}): ${msg || '请核对 DeepSeek API Key 是否正确'}`);
     }
     const data = await res.json();
@@ -1458,7 +1650,7 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
     }, 10000);
     if (!authRes.ok) {
       const authErr = await authRes.json().catch(() => ({}));
-      const msg = authErr.error?.message || authErr.message || `HTTP ${authRes.status}`;
+      const msg = redactSensitiveText(authErr.error?.message || authErr.message || `HTTP ${authRes.status}`, [apiKey]);
       throw new Error(`OpenRouter 鉴权失败 (${msg}): 该密钥非有效 OpenRouter Key。若您使用的是 DeepSeek 密钥，请在上方“服务商预设”中选择 DeepSeek`);
     }
 
@@ -1467,7 +1659,7 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
     }, 15000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `OpenRouter 请求失败: HTTP ${res.status}`);
+      throw new Error(redactSensitiveText(err.error?.message || `OpenRouter 请求失败: HTTP ${res.status}`, [apiKey]));
     }
     const data = await res.json();
     if (!data.data || !Array.isArray(data.data)) throw new Error('OpenRouter 未返回模型列表');
@@ -1483,7 +1675,7 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
     const res = await fetchWithTimeout(url, { headers: defaultHeaders }, 15000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `OpenCode 请求失败: HTTP ${res.status}`);
+      throw new Error(redactSensitiveText(err.error?.message || `OpenCode 请求失败: HTTP ${res.status}`, [apiKey]));
     }
     const data = await res.json();
     const list = data.data || data.models || [];
@@ -1494,10 +1686,10 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
   // 6) OpenAI
   if (provider === 'openai') {
     const url = deriveModelsUrl(customEndpoint, 'https://api.openai.com/v1/models');
-    const res = await fetchWithTimeout(url, { headers: { 'Authorization': `Bearer ${apiKey}` } }, 15000);
+    const res = await fetchWithTimeout(url, { headers: { 'Authorization': `Bearer ${apiKey.trim()}` } }, 15000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `OpenAI 请求失败: HTTP ${res.status}`);
+      throw new Error(redactSensitiveText(err.error?.message || `OpenAI 请求失败: HTTP ${res.status}`, [apiKey]));
     }
     const data = await res.json();
     if (!data.data || !Array.isArray(data.data)) throw new Error('OpenAI 未返回模型列表');
@@ -1511,10 +1703,10 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
   // 7) 硅基流动 SiliconFlow
   if (provider === 'siliconflow') {
     const url = deriveModelsUrl(customEndpoint, 'https://api.siliconflow.cn/v1/models');
-    const res = await fetchWithTimeout(url, { headers: { 'Authorization': `Bearer ${apiKey}` } }, 15000);
+    const res = await fetchWithTimeout(url, { headers: { 'Authorization': `Bearer ${apiKey.trim()}` } }, 15000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `SiliconFlow 请求失败: HTTP ${res.status}`);
+      throw new Error(redactSensitiveText(err.error?.message || `SiliconFlow 请求失败: HTTP ${res.status}`, [apiKey]));
     }
     const data = await res.json();
     const list = data.data || data.models || [];
@@ -1525,10 +1717,10 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
   // 8) Groq
   if (provider === 'groq') {
     const url = deriveModelsUrl(customEndpoint, 'https://api.groq.com/openai/v1/models');
-    const res = await fetchWithTimeout(url, { headers: { 'Authorization': `Bearer ${apiKey}` } }, 15000);
+    const res = await fetchWithTimeout(url, { headers: { 'Authorization': `Bearer ${apiKey.trim()}` } }, 15000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `Groq 请求失败: HTTP ${res.status}`);
+      throw new Error(redactSensitiveText(err.error?.message || `Groq 请求失败: HTTP ${res.status}`, [apiKey]));
     }
     const data = await res.json();
     const list = data.data || data.models || [];
@@ -1543,7 +1735,7 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
     const res = await fetchWithTimeout(url, { headers: defaultHeaders }, 15000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `自定义端点请求失败: HTTP ${res.status}`);
+      throw new Error(redactSensitiveText(err.error?.message || `自定义端点请求失败: HTTP ${res.status}`, [apiKey]));
     }
     const data = await res.json();
     const list = data.data || data.models || (Array.isArray(data) ? data : []);
@@ -1576,13 +1768,14 @@ async function fetchProviderModels(provider, apiKey, customEndpoint) {
 
 // 4.5 测试模型连接与密钥有效性 (极低 token 消耗: 发送 1 字符测试探针并限制 1 token 输出)
 async function testModelConnection({ provider, endpoint, apiKey, modelName }) {
-  if (!apiKey && provider !== 'ollama') {
+  if (!apiKey && provider !== 'ollama' && !isLocalEndpoint(endpoint)) {
     throw new Error('请先输入 API Key');
   }
 
   let targetEndpoint = (endpoint && endpoint.trim()) ? endpoint.trim() : '';
   if (!targetEndpoint) {
     if (provider === 'deepseek') targetEndpoint = 'https://api.deepseek.com/chat/completions';
+    else if (provider === 'gemini') targetEndpoint = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
     else if (provider === 'openrouter') targetEndpoint = 'https://openrouter.ai/api/v1/chat/completions';
     else if (provider === 'openai') targetEndpoint = 'https://api.openai.com/v1/chat/completions';
     else if (provider === 'siliconflow') targetEndpoint = 'https://api.siliconflow.cn/v1/chat/completions';
@@ -1600,6 +1793,7 @@ async function testModelConnection({ provider, endpoint, apiKey, modelName }) {
   let targetModel = (modelName && modelName.trim()) ? modelName.trim() : '';
   if (!targetModel) {
     if (provider === 'deepseek') targetModel = 'deepseek-chat';
+    else if (provider === 'gemini') targetModel = 'gemini-2.5-flash';
     else if (provider === 'openrouter') targetModel = 'google/gemini-2.0-flash-001';
     else if (provider === 'openai') targetModel = 'gpt-4o-mini';
     else if (provider === 'siliconflow') targetModel = 'deepseek-ai/DeepSeek-V3';
@@ -1614,7 +1808,7 @@ async function testModelConnection({ provider, endpoint, apiKey, modelName }) {
     'HTTP-Referer': 'https://github.com/GeoffLeng/Translation-Tools',
     'X-Title': 'Translate FY'
   };
-  if (apiKey) {
+  if (apiKey && apiKey.trim()) {
     headers['Authorization'] = `Bearer ${apiKey.trim()}`;
   }
 
@@ -1635,14 +1829,14 @@ async function testModelConnection({ provider, endpoint, apiKey, modelName }) {
       body: JSON.stringify(probePayload)
     }, 15000);
   } catch (netErr) {
-    throw new Error(`连接失败 (${netErr.message})，请检查网络或代理设置`);
+    throw new Error(`连接失败 (${redactSensitiveText(netErr.message, [apiKey])})，请检查网络或代理设置`);
   }
 
   const durationMs = Math.round(performance.now() - startTime);
 
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
-    const rawMsg = errBody.error?.message || errBody.message || '';
+    const rawMsg = redactSensitiveText(errBody.error?.message || errBody.message || '', [apiKey]);
     if (res.status === 401) {
       throw new Error(`认证失败 (401 Unauthorized): API Key 无效或未与当前接口地址匹配。${rawMsg ? `[${rawMsg}]` : ''}`);
     } else if (res.status === 404) {
@@ -1671,6 +1865,52 @@ async function testModelConnection({ provider, endpoint, apiKey, modelName }) {
 
 // 5. 监听 runtime 消息
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // 安全校验：仅允许来自本扩展自身（Popup / Options / PDF Viewer / Content Script）的通信
+  if (sender && sender.id && sender.id !== chrome.runtime.id) {
+    return false;
+  }
+
+  // 安全获取可用引擎列表（不向网页 Content Script 暴露任何原始 API Key）
+  if (request.action === 'getAvailableEngines') {
+    chrome.storage.local.get(ENGINE_STORAGE_DEFAULTS, (result) => {
+      const available = [
+        { id: 'google', name: 'Google (免Key)' },
+        { id: 'bing', name: 'Bing (免Key)' }
+      ];
+      if (result.glmApiKey && result.glmApiKey.trim() !== '') {
+        available.push({ id: 'glm', name: '智谱 GLM (免费大模型)' });
+      }
+      if (result.geminiApiKey && result.geminiApiKey.trim() !== '') {
+        available.push({ id: 'gemini', name: 'Gemini (免费大模型)' });
+      }
+      if (result.deepseekApiKey && result.deepseekApiKey.trim() !== '') {
+        available.push({ id: 'deepseek', name: 'DeepSeek (大模型)' });
+      }
+      if (result.deeplApiKey && result.deeplApiKey.trim() !== '') {
+        available.push({ id: 'deepl', name: 'DeepL' });
+      }
+      if (result.youdaoAppKey && result.youdaoAppKey.trim() !== '' && result.youdaoAppSecret && result.youdaoAppSecret.trim() !== '') {
+        available.push({ id: 'youdao', name: '有道翻译' });
+      }
+      if (result.customModels && Array.isArray(result.customModels)) {
+        result.customModels.forEach(model => {
+          const hasKeyOrLocal = (model.apiKey && model.apiKey.trim() !== '') || model.provider === 'ollama' || isLocalEndpoint(model.endpoint);
+          if (model.id && model.name && model.endpoint && hasKeyOrLocal) {
+            available.push({ id: `custom_${model.id}`, name: `${model.name} (AI)` });
+          }
+        });
+      }
+      sendResponse({
+        success: true,
+        engines: available,
+        glmModels: Array.isArray(result.glmModels) ? result.glmModels : [],
+        geminiModels: Array.isArray(result.geminiModels) ? result.geminiModels : [],
+        deepseekModels: Array.isArray(result.deepseekModels) ? result.deepseekModels : []
+      });
+    });
+    return true;
+  }
+
   if (request.action === 'fetchModels') {
     const { provider, apiKey, endpoint } = request;
     fetchProviderModels(provider, apiKey, endpoint)
@@ -1678,7 +1918,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ success: true, models });
       })
       .catch(err => {
-        sendResponse({ success: false, error: err.message });
+        sendResponse({ success: false, error: redactSensitiveText(err.message, [apiKey]) });
       });
     return true;
   }
@@ -1690,8 +1930,56 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse(result);
       })
       .catch(err => {
-        sendResponse({ success: false, error: err.message });
+        sendResponse({ success: false, error: redactSensitiveText(err.message, [apiKey]) });
       });
+    return true;
+  }
+
+  // 获取当前 Token 消耗监控数据与安全限额
+  if (request.action === 'getTokenStats') {
+    getTokenStatsData().then(stats => {
+      sendResponse({ success: true, stats });
+    }).catch(err => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
+  // 重置 Token 监控数据 (scope: 'today' | 'all')
+  if (request.action === 'resetTokenStats') {
+    const scope = request.scope || 'today';
+    getTokenStatsData().then(stats => {
+      if (scope === 'all') {
+        stats.todayTokens = 0;
+        stats.todayCalls = 0;
+        stats.totalTokens = 0;
+        stats.history = {};
+        stats.byEngine = {};
+      } else {
+        stats.todayTokens = 0;
+        stats.todayCalls = 0;
+      }
+      chrome.storage.local.set({ [TOKEN_STATS_STORAGE_KEY]: stats }, () => {
+        sendResponse({ success: true, stats });
+      });
+    }).catch(err => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+
+  // 更新预警与硬熔断限制配置
+  if (request.action === 'updateTokenLimits') {
+    const { dailyTokenWarnLimit, dailyTokenHardLimit } = request;
+    getTokenStatsData().then(stats => {
+      if (typeof dailyTokenWarnLimit === 'number') stats.dailyTokenWarnLimit = dailyTokenWarnLimit;
+      if (typeof dailyTokenHardLimit === 'number') stats.dailyTokenHardLimit = dailyTokenHardLimit;
+      chrome.storage.local.set({ [TOKEN_STATS_STORAGE_KEY]: stats }, () => {
+        sendResponse({ success: true, stats });
+      });
+    }).catch(err => {
+      sendResponse({ success: false, error: err.message });
+    });
     return true;
   }
 
@@ -1745,7 +2033,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const customId = engine.substring(7); // "custom_" 长度为 7
         const customModel = (settings.customModels || []).find(m => m.id === customId);
         if (customModel) {
-          translationPromise = translateOpenAICompatible(text, targetLang, customModel.apiKey, customModel.endpoint, customModel.modelName, context, activePersona, settings.customPersonaPrompts, isBilingual, sourceLang);
+          translationPromise = translateOpenAICompatible(text, targetLang, customModel.apiKey, customModel.endpoint, customModel.modelName, context, activePersona, settings.customPersonaPrompts, isBilingual, sourceLang, true);
         } else {
           translationPromise = Promise.reject(new Error('未找到该自定义模型的配置信息'));
         }
@@ -1758,7 +2046,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           sendResponse({ success: true, translation: healAcademicSymbols(translation, activePersona) });
         })
         .catch(err => {
-          sendResponse({ success: false, error: err.message });
+          sendResponse({ success: false, error: redactSensitiveText(err.message) });
         });
     });
 
@@ -1790,7 +2078,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const customId = engine.substring(7);
         const customModel = (settings.customModels || []).find(m => m.id === customId);
         if (customModel) {
-          batchPromise = translateBatchOpenAICompatible(items, targetLang, customModel.apiKey, customModel.endpoint, customModel.modelName, context, effectivePersona, settings.customPersonaPrompts);
+          batchPromise = translateBatchOpenAICompatible(items, targetLang, customModel.apiKey, customModel.endpoint, customModel.modelName, context, effectivePersona, settings.customPersonaPrompts, true);
         } else {
           batchPromise = Promise.reject(new Error('未找到该自定义模型的配置信息'));
         }
@@ -1806,7 +2094,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           sendResponse({ success: true, translations: healed });
         })
         .catch(err => {
-          sendResponse({ success: false, error: err.message });
+          sendResponse({ success: false, error: redactSensitiveText(err.message) });
         });
     });
 
@@ -1815,13 +2103,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 // 3.8 通用流式请求封装 (支持划词悬浮窗打字机与论文总结)
-async function streamOpenAIEndpoint({ apiKey, endpoint, modelName, messages, temperature = 0.2, signal, onChunk }) {
+async function streamOpenAIEndpoint({ apiKey, endpoint, modelName, messages, temperature = 0.2, signal, onChunk, engine = 'ai' }) {
+  const estPromptTokens = Array.isArray(messages) ? messages.reduce((sum, m) => sum + estimateTokenCount(m.content), 0) : 0;
+  await checkTokenLimits(estPromptTokens);
+
   const headers = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${apiKey}`,
     'HTTP-Referer': 'https://github.com/GeoffLeng/Translation-Tools',
     'X-Title': 'Translate FY'
   };
+  if (apiKey && apiKey.trim()) {
+    headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+  }
 
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -1837,13 +2130,14 @@ async function streamOpenAIEndpoint({ apiKey, endpoint, modelName, messages, tem
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || `API 错误: ${res.status}`);
+    throw new Error(redactSensitiveText(errorData.error?.message || `API 错误: ${res.status}`, [apiKey]));
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
   let fullOutput = '';
+  let streamUsageTokens = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -1858,6 +2152,9 @@ async function streamOpenAIEndpoint({ apiKey, endpoint, modelName, messages, tem
       if (trimmed.startsWith('data:')) {
         try {
           const json = JSON.parse(trimmed.slice(5).trim());
+          if (json.usage && typeof json.usage.total_tokens === 'number') {
+            streamUsageTokens = json.usage.total_tokens;
+          }
           const delta = json.choices?.[0]?.delta?.content || '';
           if (delta) {
             fullOutput += delta;
@@ -1867,18 +2164,29 @@ async function streamOpenAIEndpoint({ apiKey, endpoint, modelName, messages, tem
       }
     }
   }
+
+  const actualTokens = streamUsageTokens || (estPromptTokens + estimateTokenCount(fullOutput));
+  const engKey = engine || (endpoint.includes('bigmodel.cn') ? 'glm' : (endpoint.includes('deepseek.com') ? 'deepseek' : 'ai_custom'));
+  recordTokenUsage({ engine: engKey, tokens: actualTokens }).catch(() => {});
+
   return fullOutput;
 }
 
-// Google Gemini 官方 SSE 流式封装
+// Google Gemini 官方 SSE 流式封装 — 密钥放 Header 防止 URL 泄露
 async function streamGeminiEndpoint({ apiKey, modelName, prompt, signal, onChunk }) {
-  if (!apiKey) throw new Error('未配置 Gemini API Key，请在设置中配置');
+  if (!apiKey || !apiKey.trim()) throw new Error('未配置 Gemini API Key，请在设置中配置');
   const cleanModel = (modelName || 'gemini-2.0-flash').replace(/^models\//, '');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:streamGenerateContent?alt=sse&key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:streamGenerateContent?alt=sse`;
+
+  const estPromptTokens = estimateTokenCount(prompt);
+  await checkTokenLimits(estPromptTokens);
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey.trim()
+    },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }]
     }),
@@ -1887,13 +2195,14 @@ async function streamGeminiEndpoint({ apiKey, modelName, prompt, signal, onChunk
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || `Gemini API 错误: ${res.status}`);
+    throw new Error(redactSensitiveText(errorData.error?.message || `Gemini API 错误: ${res.status}`, [apiKey]));
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let fullOutput = '';
   let lineBuffer = '';
+  let streamUsageTokens = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -1909,6 +2218,9 @@ async function streamGeminiEndpoint({ apiKey, modelName, prompt, signal, onChunk
       const jsonStr = trimmed.slice(6).trim();
       try {
         const parsed = JSON.parse(jsonStr);
+        if (parsed.usageMetadata && typeof parsed.usageMetadata.totalTokenCount === 'number') {
+          streamUsageTokens = parsed.usageMetadata.totalTokenCount;
+        }
         const delta = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
         if (delta) {
           fullOutput += delta;
@@ -1917,6 +2229,9 @@ async function streamGeminiEndpoint({ apiKey, modelName, prompt, signal, onChunk
       } catch (e) {}
     }
   }
+
+  const actualTokens = streamUsageTokens || (estPromptTokens + estimateTokenCount(fullOutput));
+  recordTokenUsage({ engine: 'gemini', tokens: actualTokens }).catch(() => {});
 
   return fullOutput;
 }
@@ -1953,6 +2268,11 @@ function createStreamTokenUnmasker(tokenMap, onSafeChunk) {
 
 // 4. 长连接流式通信总线 (Streaming Port Listener)
 chrome.runtime.onConnect.addListener((port) => {
+  if (port.sender && port.sender.id && port.sender.id !== chrome.runtime.id) {
+    port.disconnect();
+    return;
+  }
+
   // 划词浮窗长连接逐字打字机
   if (port.name === 'translate-stream') {
     let abortController = new AbortController();
@@ -2041,6 +2361,7 @@ chrome.runtime.onConnect.addListener((port) => {
               let apiKey = '';
               let endpoint = '';
               let modelName = '';
+              let isCustomEngine = false;
 
               if (engine === 'glm') {
                 apiKey = settings.glmApiKey;
@@ -2051,6 +2372,7 @@ chrome.runtime.onConnect.addListener((port) => {
                 endpoint = 'https://api.deepseek.com/chat/completions';
                 modelName = model || settings.deepseekActiveModel || 'deepseek-chat';
               } else if (engine && engine.startsWith('custom_')) {
+                isCustomEngine = true;
                 const customId = engine.substring(7);
                 const customModel = (settings.customModels || []).find(m => m.id === customId);
                 if (customModel) {
@@ -2060,7 +2382,9 @@ chrome.runtime.onConnect.addListener((port) => {
                 }
               }
 
-              if (!apiKey) throw new Error(`该 AI 引擎 (${engine}) 尚未配置 API Key，请在设置中配置`);
+              if ((!apiKey || !apiKey.trim()) && !isCustomEngine && !isLocalEndpoint(endpoint)) {
+                throw new Error(`该 AI 引擎 (${engine}) 尚未配置 API Key，请在设置中配置`);
+              }
               if (!endpoint) throw new Error('接口地址未配置');
 
               const rawOutput = await streamOpenAIEndpoint({
@@ -2069,7 +2393,8 @@ chrome.runtime.onConnect.addListener((port) => {
                 modelName,
                 messages: promptObj.messages,
                 signal: abortController.signal,
-                onChunk: (delta) => unmasker.feed(delta)
+                onChunk: (delta) => unmasker.feed(delta),
+                engine
               });
               unmasker.flush();
               fullResult = healAcademicSymbols(unmaskNumericEntities(rawOutput, tokenMap), activePersona);
@@ -2092,7 +2417,7 @@ chrome.runtime.onConnect.addListener((port) => {
           port.postMessage({ type: 'done', fullText: healAcademicSymbols(fullResult, activePersona) });
         } catch (err) {
           if (err.name !== 'AbortError') {
-            port.postMessage({ type: 'error', error: err.message });
+            port.postMessage({ type: 'error', error: redactSensitiveText(err.message) });
           }
         }
       });
@@ -2144,14 +2469,14 @@ ${backbone.tailSample || ''}
 `;
 
           let chosenEngine = engine;
-          if (!chosenEngine) {
+          if (!chosenEngine || !isAIEngineId(chosenEngine)) {
             if (settings.glmApiKey) chosenEngine = 'glm';
             else if (settings.geminiApiKey) chosenEngine = 'gemini';
             else if (settings.deepseekApiKey) chosenEngine = 'deepseek';
             else if (settings.customModels && settings.customModels.length > 0) chosenEngine = 'custom_' + settings.customModels[0].id;
           }
 
-          if (chosenEngine === 'gemini' || (!settings.glmApiKey && !settings.deepseekApiKey && settings.geminiApiKey)) {
+          if (chosenEngine === 'gemini') {
             const geminiModel = model || settings.geminiActiveModel || 'gemini-2.0-flash';
             const fullResult = await streamGeminiEndpoint({
               apiKey: settings.geminiApiKey,
@@ -2169,12 +2494,14 @@ ${backbone.tailSample || ''}
           let apiKey = settings.glmApiKey || settings.deepseekApiKey;
           let endpoint = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
           let modelName = model || settings.glmActiveModel || 'glm-4-flash';
+          let isCustomEngine = false;
 
           if (chosenEngine === 'deepseek') {
             apiKey = settings.deepseekApiKey;
             endpoint = 'https://api.deepseek.com/chat/completions';
             modelName = model || settings.deepseekActiveModel || 'deepseek-chat';
           } else if (chosenEngine && chosenEngine.startsWith('custom_')) {
+            isCustomEngine = true;
             const customId = chosenEngine.substring(7);
             const customModel = (settings.customModels || []).find(m => m.id === customId);
             if (customModel) {
@@ -2188,8 +2515,8 @@ ${backbone.tailSample || ''}
             modelName = model || settings.glmActiveModel || 'glm-4-flash';
           }
 
-          if (!apiKey) {
-            throw new Error('学术论文总结需要大模型支持，请在设置中配置 GLM、Gemini 或 DeepSeek API Key');
+          if ((!apiKey || !apiKey.trim()) && !isCustomEngine && !isLocalEndpoint(endpoint)) {
+            throw new Error('学术论文总结需要大模型支持，请在设置中配置 GLM、Gemini、DeepSeek 或自定义大模型');
           }
 
           const messages = [
@@ -2206,13 +2533,14 @@ ${backbone.tailSample || ''}
             signal: abortController.signal,
             onChunk: (delta) => {
               port.postMessage({ type: 'chunk', delta });
-            }
+            },
+            engine: chosenEngine || 'ai'
           });
 
           port.postMessage({ type: 'done', fullText: fullResult });
         } catch (err) {
           if (err.name !== 'AbortError') {
-            port.postMessage({ type: 'error', error: err.message });
+            port.postMessage({ type: 'error', error: redactSensitiveText(err.message) });
           }
         }
       });

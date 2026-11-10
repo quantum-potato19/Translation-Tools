@@ -98,7 +98,7 @@ async function getBingToken() {
  */
 export async function translateBing(text, targetLang = 'zh-CN', sourceLang = 'auto') {
   if (!text || typeof text !== 'string') return '';
-  const langMap = { 'zh-CN': 'zh-Hans', 'en': 'en', 'ja': 'ja', 'ko': 'ko' };
+  const langMap = { 'zh-CN': 'zh-Hans', 'zh-TW': 'zh-Hant', 'en': 'en', 'ja': 'ja', 'ko': 'ko' };
   const to = langMap[targetLang] || targetLang;
   const fromLang = (sourceLang && sourceLang !== 'auto') ? (langMap[sourceLang] || sourceLang) : 'auto-detect';
 

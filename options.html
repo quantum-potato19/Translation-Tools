@@ -125,42 +125,8 @@
 
         <h2 class="section-subtitle">AI 与核心翻译服务</h2>
         <div class="ios-card">
-          <!-- Google Gemini (终身免费额度·极速思考) -->
-          <div class="setting-group" style="padding-bottom: 16px;">
-            <div class="setting-input-header">
-              <span class="setting-title" style="font-weight:600;">Google Gemini（极速高精·官方免费额度）</span>
-              <a href="https://aistudio.google.com/app/apikey" target="_blank" class="ios-link">获取免费 API Key</a>
-            </div>
-            <input type="password" id="gemini-api-key" placeholder="输入 Google Gemini API Key" class="ios-input" style="margin-bottom: 8px;">
-            <div style="display: flex; gap: 8px; align-items: center;">
-              <span style="font-size: 13px; color: #8e8e93; min-width: 65px;">默认模型:</span>
-              <select id="gemini-model" class="ios-select" style="flex: 1;">
-                <option value="gemini-2.5-flash">gemini-2.5-flash (官方推荐·极速思考)</option>
-                <option value="gemini-2.5-pro">gemini-2.5-pro (深度多模态学术推理)</option>
-                <option value="gemini-2.0-flash">gemini-2.0-flash (高吞吐极速)</option>
-                <option value="gemini-1.5-flash">gemini-1.5-flash (稳定经典版)</option>
-              </select>
-            </div>
-          </div>
-
-          <!-- DeepSeek (官方学术精译与深度推理) -->
-          <div class="setting-group" style="padding-top: 16px; padding-bottom: 16px; border-top: 1px solid rgba(0,0,0,0.04);">
-            <div class="setting-input-header">
-              <span class="setting-title" style="font-weight:600;">DeepSeek（官方学术精译与长链推理）</span>
-              <a href="https://platform.deepseek.com/" target="_blank" class="ios-link">获取 DeepSeek API Key</a>
-            </div>
-            <input type="password" id="deepseek-api-key" placeholder="输入 DeepSeek API Key (sk-...)" class="ios-input" style="margin-bottom: 8px;">
-            <div style="display: flex; gap: 8px; align-items: center;">
-              <span style="font-size: 13px; color: #8e8e93; min-width: 65px;">默认模型:</span>
-              <select id="deepseek-model" class="ios-select" style="flex: 1;">
-                <option value="deepseek-chat">deepseek-chat (V3 极速高精翻译)</option>
-                <option value="deepseek-reasoner">deepseek-reasoner (R1 深度长链学术推理)</option>
-              </select>
-            </div>
-          </div>
-
           <!-- 智谱 GLM (4/4.5/4.7 flash 免费) -->
-          <div class="setting-group" style="padding-top: 16px; padding-bottom: 16px; border-top: 1px solid rgba(0,0,0,0.04);">
+          <div class="setting-group" style="padding-bottom: 16px;">
             <div class="setting-input-header">
               <span class="setting-title" style="font-weight:600;">智谱 GLM（4/4.5/4.7 flash 免费）</span>
               <div style="display: flex; gap: 8px; align-items: center;">
@@ -229,6 +195,59 @@
             </div>
             <div id="custom-models-list" style="width: 100%; display: flex; flex-direction: column; gap: 8px; margin-top: 4px;">
               <!-- 动态添加 -->
+            </div>
+          </div>
+        </div>
+
+        <h2 class="section-subtitle">Token 用量与防滥用监控</h2>
+        <div class="ios-card" style="padding: 16px;">
+          <!-- 统计指标网格 -->
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px;">
+            <div style="background: rgba(0,122,255,0.06); border: 1px solid rgba(0,122,255,0.15); border-radius: 10px; padding: 12px 14px;">
+              <span style="font-size: 12px; color: #007AFF; font-weight: 500;">今日 Token 消耗</span>
+              <div id="token-stat-today-tokens" style="font-size: 20px; font-weight: 700; color: #1c1c1e; margin-top: 4px;">0</div>
+            </div>
+            <div style="background: rgba(52,199,89,0.06); border: 1px solid rgba(52,199,89,0.15); border-radius: 10px; padding: 12px 14px;">
+              <span style="font-size: 12px; color: #34C759; font-weight: 500;">今日 AI 调用次数</span>
+              <div id="token-stat-today-calls" style="font-size: 20px; font-weight: 700; color: #1c1c1e; margin-top: 4px;">0 次</div>
+            </div>
+            <div style="background: rgba(88,86,214,0.06); border: 1px solid rgba(88,86,214,0.15); border-radius: 10px; padding: 12px 14px;">
+              <span style="font-size: 12px; color: #5856D6; font-weight: 500;">累计总消耗 Tokens</span>
+              <div id="token-stat-total-tokens" style="font-size: 20px; font-weight: 700; color: #1c1c1e; margin-top: 4px;">0</div>
+            </div>
+          </div>
+
+          <!-- 用量进度条 -->
+          <div style="margin-bottom: 16px;">
+            <div style="display: flex; justify-content: space-between; font-size: 12px; color: #636366; margin-bottom: 6px;">
+              <span>今日消耗进度 (预警线)</span>
+              <span id="token-progress-text">0 / 50,000 Tokens</span>
+            </div>
+            <div style="width: 100%; height: 7px; background: rgba(0,0,0,0.06); border-radius: 4px; overflow: hidden;">
+              <div id="token-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #34C759, #FF9500); border-radius: 4px; transition: width 0.3s ease;"></div>
+            </div>
+          </div>
+
+          <!-- 阈值安全控制 -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
+            <div>
+              <label for="token-warn-limit-input" style="display: block; font-size: 12.5px; font-weight: 500; color: #1c1c1e; margin-bottom: 4px;">每日用量桌面预警阈值</label>
+              <input type="number" id="token-warn-limit-input" min="1000" step="5000" class="ios-input" placeholder="例如 50000">
+              <span style="font-size: 11px; color: #8e8e93;">达到此数值时发送桌面通知，提醒额度消耗</span>
+            </div>
+            <div>
+              <label for="token-hard-limit-input" style="display: block; font-size: 12.5px; font-weight: 500; color: #1c1c1e; margin-bottom: 4px;">每日硬限制熔断保护阈值</label>
+              <input type="number" id="token-hard-limit-input" min="0" step="10000" class="ios-input" placeholder="例如 200000 (填 0 禁用)">
+              <span style="font-size: 11px; color: #8e8e93;">达到此数值自动拦截后续 AI 请求以防超额，填 0 禁用</span>
+            </div>
+          </div>
+
+          <!-- 操作按钮栏 -->
+          <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(0,0,0,0.05); padding-top: 12px; flex-wrap: wrap; gap: 8px;">
+            <span style="font-size: 11.5px; color: #8e8e93;">轻量化监控：零外部包依赖，数据纯本地滚动留存 7 天</span>
+            <div style="display: flex; gap: 8px;">
+              <button type="button" id="token-reset-today-btn" class="ios-button secondary-btn" style="padding: 5px 12px; font-size: 12px;">重置今日统计</button>
+              <button type="button" id="token-reset-all-btn" class="ios-button danger-btn" style="padding: 5px 12px; font-size: 12px;">清空全部记录</button>
             </div>
           </div>
         </div>
@@ -431,7 +450,7 @@
           <div class="brand-large">
             <img src="/icons/logo.png" class="logo-large" alt="logo">
             <h3>Translate FY</h3>
-            <span class="version-tag">Version 1.0.2</span>
+            <span class="version-tag">Version 1.0.3</span>
           </div>
           <p class="about-text">
             专注纯粹高效的极简划词翻译与 AI 智能查词工具。采用轻量 Shadow DOM 隔离与原生组件封装，保证完全零样式侵入，提供极速响应、优雅克制的划词翻译与长文档 PDF 沉浸式阅读体验。
@@ -457,6 +476,7 @@
         <span style="font-size: 13px; font-weight: 500; color: #3a3a3c;">服务商预设</span>
         <select id="modal-provider" class="ios-select" style="width: 100%; padding: 10px; background-position: right 14px center;">
           <option value="deepseek">DeepSeek (官方推荐 - deepseek-chat / reasoner)</option>
+          <option value="gemini">Google Gemini (官方免费额度 - gemini-2.5-flash)</option>
           <option value="openrouter">OpenRouter (全模型聚合/多免费模型)</option>
           <option value="openai">OpenAI (官方 / 代理)</option>
           <option value="siliconflow">硅基流动 (SiliconFlow)</option>
