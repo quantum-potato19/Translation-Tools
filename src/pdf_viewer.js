@@ -7,6 +7,12 @@ import {
   TRANSLATION_PERSONAS,
   LOCAL_SERVER_ORIGIN
 } from './shared/constants.js';
+import {
+  orderLinesByLayout,
+  buildParagraphBlocks,
+  classifyColorsFromSamples,
+  splitTranslationForSegments
+} from './shared/pdf_layout.js';
 
 // 1. 设置 Worker 与防嵌套点击劫持保护 (Clickjacking Guard)
 if (typeof window !== 'undefined' && window.top !== window.self && location.protocol === 'chrome-extension:') {
@@ -2881,7 +2887,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // 绑定译文块交互：悬停快捷微工具栏、单块重译与行内编辑、双击复制、点击对齐左侧原文
-  function bindOverlayBlockInteractions(overlayBlock, block, pageNum, pageHeight, scale) {
+  function bindOverlayBlockInteractions(overlayBlock, block, pageNum, pageHeight, scale, segmentIndex = -1) {
     let microToolbar = null;
 
     overlayBlock.addEventListener('mouseenter', () => {
@@ -2908,15 +2914,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (editBtn) {
           editBtn.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (microToolbar) {
+              microToolbar.remove();
+              microToolbar = null;
+            }
             overlayBlock.contentEditable = 'true';
             overlayBlock.focus();
             showToast('已进入编辑模式，修改完毕后点击空白处自动保存');
             const onBlur = () => {
               overlayBlock.contentEditable = 'false';
               overlayBlock.removeEventListener('blur', onBlur);
-              const newText = overlayBlock.innerText.trim();
-              if (newText && newText !== block.transText) {
-                block.transText = newText;
+              const editedText = overlayBlock.innerText.trim();
+              if (!editedText) return;
+              let updatedFullText = editedText;
+              if (segmentIndex >= 0 && Array.isArray(block.segmentBoxes) && block.segmentBoxes.length > 1) {
+                const segParts = splitTranslationForSegments(block.transText, block.segmentBoxes);
+                segParts[segmentIndex] = editedText;
+                updatedFullText = segParts.join('');
+              }
+              if (updatedFullText !== block.transText) {
+                block.transText = updatedFullText;
                 if (currentDocId) DocStorage.saveTranslation(currentDocId, pageNum, pageTranslations.get(pageNum));
                 showToast('✓ 译文修改已成功保存');
               }
@@ -2939,7 +2956,14 @@ document.addEventListener('DOMContentLoaded', () => {
               const newTrans = await requestTranslation(block.originalText, engine, targetLang, model);
               if (newTrans) {
                 block.transText = newTrans;
-                overlayBlock.textContent = newTrans;
+                const overlayLayer = overlayBlock.parentElement;
+                const siblingSegs = overlayLayer ? overlayLayer.querySelectorAll(`.trans-overlay-block[data-block-id="${block.id}"]`) : [];
+                if (Array.isArray(block.segmentBoxes) && block.segmentBoxes.length > 1 && siblingSegs.length === block.segmentBoxes.length) {
+                  const parts = splitTranslationForSegments(newTrans, block.segmentBoxes);
+                  siblingSegs.forEach((el, idx) => { el.textContent = parts[idx] || ''; });
+                } else {
+                  overlayBlock.textContent = newTrans;
+                }
                 if (currentDocId) DocStorage.saveTranslation(currentDocId, pageNum, pageTranslations.get(pageNum));
                 showToast('✓ 语义段落已重新翻译');
               } else {
@@ -3007,131 +3031,216 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 采样页面背景基色 (4个角落+顶部边缘采样，兼容暗黑主题与深色幻灯片)
-  function getPageDominantBg(canvas) {
-    if (!canvas || !canvas.width || !canvas.height) return '#ffffff';
-    try {
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      const pts = [
-        [15, 15],
-        [canvas.width - 15, 15],
-        [15, canvas.height - 15],
-        [canvas.width - 15, canvas.height - 15],
-        [Math.round(canvas.width / 2), 20]
+  function parseRgbTriplet(colorStr) {
+    if (!colorStr || typeof colorStr !== 'string') return [255, 255, 255];
+    const m = colorStr.match(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/i);
+    if (m) return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+    if (colorStr.startsWith('#') && colorStr.length >= 7) {
+      return [
+        parseInt(colorStr.slice(1, 3), 16) || 255,
+        parseInt(colorStr.slice(3, 5), 16) || 255,
+        parseInt(colorStr.slice(5, 7), 16) || 255
       ];
-      for (const [px, py] of pts) {
-        const d = ctx.getImageData(Math.max(0, Math.min(canvas.width - 1, px)), Math.max(0, Math.min(canvas.height - 1, py)), 1, 1).data;
-        if (d[3] > 120) {
-          return `rgb(${d[0]}, ${d[1]}, ${d[2]})`;
-        }
-      }
-    } catch (e) {}
-    return '#ffffff';
+    }
+    return [255, 255, 255];
   }
 
-  // 采样指定包围盒区域的文字前景色与背景色
+  // 多点统计众数采样页面背景基色（兼容浅色纸张、暗黑幻灯片，避开页边黑线）
+  function getPageDominantBg(canvas) {
+    if (!canvas || !canvas.width || !canvas.height) return 'rgb(255, 255, 255)';
+    try {
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const w = canvas.width;
+      const h = canvas.height;
+      const pts = [
+        [14, 14], [w - 14, 14], [14, h - 14], [w - 14, h - 14],
+        [Math.round(w * 0.25), 18], [Math.round(w * 0.5), 18], [Math.round(w * 0.75), 18],
+        [Math.round(w * 0.25), h - 18], [Math.round(w * 0.5), h - 18], [Math.round(w * 0.75), h - 18],
+        [16, Math.round(h * 0.5)], [w - 16, Math.round(h * 0.5)]
+      ];
+      const clusters = new Map();
+      for (const [rawX, rawY] of pts) {
+        const px = Math.max(0, Math.min(w - 1, rawX));
+        const py = Math.max(0, Math.min(h - 1, rawY));
+        const d = ctx.getImageData(px, py, 1, 1).data;
+        if (d[3] <= 120) continue;
+        const key = `${d[0] >> 3},${d[1] >> 3},${d[2] >> 3}`;
+        let c = clusters.get(key);
+        if (!c) {
+          c = { count: 0, sumR: 0, sumG: 0, sumB: 0 };
+          clusters.set(key, c);
+        }
+        c.count++;
+        c.sumR += d[0];
+        c.sumG += d[1];
+        c.sumB += d[2];
+      }
+      let best = null;
+      for (const c of clusters.values()) {
+        if (!best || c.count > best.count) {
+          best = c;
+        } else if (c.count === best.count) {
+          const l1 = c.sumR + c.sumG + c.sumB;
+          const l2 = best.sumR + best.sumG + best.sumB;
+          if (l1 > l2) best = c;
+        }
+      }
+      if (best && best.count > 0) {
+        return `rgb(${Math.round(best.sumR / best.count)}, ${Math.round(best.sumG / best.count)}, ${Math.round(best.sumB / best.count)})`;
+      }
+    } catch (e) {}
+    return 'rgb(255, 255, 255)';
+  }
+
+  // 采样指定包围盒区域的文字前景色与背景色（网格众数统计，杜绝边缘文字污染导致黑底白字）
   function sampleBlockColors(canvas, box, pageHeight, scale) {
     const pageBg = getPageDominantBg(canvas);
+    const pageBgRgb = parseRgbTriplet(pageBg);
     const result = { color: '#1c1c1e', bgColor: pageBg };
-    if (!canvas || !canvas.width || !canvas.height) return result;
+    if (!canvas || !canvas.width || !canvas.height || !box) return result;
 
     try {
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       const cW = canvas.width;
       const cH = canvas.height;
-
       const canvasOutputScale = (canvas.style && canvas.style.width)
         ? (canvas.width / parseFloat(canvas.style.width))
         : 1;
 
       const left = Math.round(box.x * scale * canvasOutputScale);
       const top = Math.round((pageHeight - box.y - box.h) * scale * canvasOutputScale);
-      const width = Math.round(box.w * scale * canvasOutputScale);
-      const height = Math.round(box.h * scale * canvasOutputScale);
+      const width = Math.max(4, Math.round(box.w * scale * canvasOutputScale));
+      const height = Math.max(4, Math.round(box.h * scale * canvasOutputScale));
 
-      // 1. 围绕包围盒四周多点采样底色 (上、下、左、右)
-      const bgCandidates = [
-        [left + Math.round(width / 2), top - 3],
-        [left - 3, top + Math.round(height / 2)],
-        [left + width + 3, top + Math.round(height / 2)],
-        [left + Math.round(width / 2), top + height + 3],
-        [left + 4, top - 3]
-      ];
+      const pad = 4;
+      const regX = Math.max(0, left - pad);
+      const regY = Math.max(0, top - pad);
+      const regRight = Math.min(cW, left + width + pad);
+      const regBottom = Math.min(cH, top + height + pad);
+      const regW = Math.max(1, regRight - regX);
+      const regH = Math.max(1, regBottom - regY);
 
-      for (const [bx, by] of bgCandidates) {
-        if (bx >= 0 && bx < cW && by >= 0 && by < cH) {
-          const d = ctx.getImageData(bx, by, 1, 1).data;
-          if (d[3] > 120) {
-            result.bgColor = `rgb(${d[0]}, ${d[1]}, ${d[2]})`;
-            break;
-          }
+      const img = ctx.getImageData(regX, regY, regW, regH).data;
+      const readPx = (gx, gy) => {
+        const cx = Math.max(regX, Math.min(regRight - 1, gx)) - regX;
+        const cy = Math.max(regY, Math.min(regBottom - 1, gy)) - regY;
+        const idx = (cy * regW + cx) * 4;
+        if (img[idx + 3] <= 120) return null;
+        return [img[idx], img[idx + 1], img[idx + 2]];
+      };
+
+      const interiorPixels = [];
+      const cols = 16;
+      const rows = 10;
+      for (let r = 0; r < rows; r++) {
+        const py = top + Math.round(((r + 0.5) / rows) * height);
+        if (py < 0 || py >= cH) continue;
+        for (let c = 0; c < cols; c++) {
+          const px = left + Math.round(((c + 0.5) / cols) * width);
+          if (px < 0 || px >= cW) continue;
+          const rgb = readPx(px, py);
+          if (rgb) interiorPixels.push(rgb);
         }
       }
 
-      // 解析背景 RGB
-      let bgR = 255, bgG = 255, bgB = 255;
-      const bgMatch = result.bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-      if (bgMatch) {
-        bgR = parseInt(bgMatch[1], 10);
-        bgG = parseInt(bgMatch[2], 10);
-        bgB = parseInt(bgMatch[3], 10);
+      const borderPixels = [];
+      const borderOffsets = [0.15, 0.35, 0.5, 0.65, 0.85];
+      for (const ratio of borderOffsets) {
+        const topPx = readPx(left + Math.round(width * ratio), top - 3);
+        const botPx = readPx(left + Math.round(width * ratio), top + height + 3);
+        if (topPx) borderPixels.push(topPx);
+        if (botPx) borderPixels.push(botPx);
       }
+      const leftPx = readPx(left - 3, top + Math.round(height * 0.5));
+      const rightPx = readPx(left + width + 3, top + Math.round(height * 0.5));
+      if (leftPx) borderPixels.push(leftPx);
+      if (rightPx) borderPixels.push(rightPx);
 
-      // 2. 采样文字前景色：在文字框内部采样，寻找对比度最高、具有色彩倾向或最深/最亮色
-      const sampleX = Math.max(0, Math.min(cW - 8, left + Math.min(width * 0.2, 16)));
-      const sampleY = Math.max(0, Math.min(cH - 8, top + Math.min(height * 0.4, 16)));
-      const sampleW = Math.min(32, Math.max(6, Math.round(width * 0.5)));
-      const sampleH = Math.min(24, Math.max(6, Math.round(height * 0.5)));
-
-      const imgData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH).data;
-      let bestColor = null;
-      let maxDist = 0;
-
-      for (let i = 0; i < imgData.length; i += 4) {
-        const r = imgData[i];
-        const g = imgData[i + 1];
-        const b = imgData[i + 2];
-        const a = imgData[i + 3];
-        if (a < 128) continue;
-
-        const dist = Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB);
-        const colorSpread = Math.max(Math.abs(r - g), Math.abs(r - b), Math.abs(g - b));
-
-        // 强色彩倾向优先（如红、蓝、绿等强调标题色）
-        if (colorSpread > 35 && dist > 70) {
-          result.color = `rgb(${r}, ${g}, ${b})`;
-          return result;
-        }
-
-        if (dist > 50 && dist > maxDist) {
-          maxDist = dist;
-          bestColor = `rgb(${r}, ${g}, ${b})`;
-        }
-      }
-
-      if (bestColor) {
-        result.color = bestColor;
-      } else {
-        const isDarkBg = (bgR * 299 + bgG * 587 + bgB * 114) / 1000 < 128;
-        result.color = isDarkBg ? '#ffffff' : '#1c1c1e';
-      }
+      return classifyColorsFromSamples(pageBgRgb, interiorPixels, borderPixels);
     } catch (e) {
       console.warn('色彩采样异常:', e);
     }
     return result;
   }
 
-  // 重新绘制并挂载无痕原排版译文块 (底图原生擦除 Inpainting + 1:1 字号/颜色还原 + 智能自适应防重叠)
+  // 重新绘制并挂载无痕原排版译文块 (全框覆写 + 降部安全余量 + 分栏段拆分 + 实测溢出字号收紧)
   function renderOverlayBlocksOnLayer(overlayLayer, blocks, pageHeight, scale, stageCanvas) {
     if (!overlayLayer || !blocks) return;
     overlayLayer.innerHTML = '';
     const pageNum = overlayLayer.parentElement ? parseInt(overlayLayer.parentElement.dataset.pageNum, 10) : currentPage;
+    const pageBgStr = stageCanvas ? getPageDominantBg(stageCanvas) : 'rgb(255, 255, 255)';
+    const pageBgRgb = parseRgbTriplet(pageBgStr);
+    const pageIsLight = ((pageBgRgb[0] * 299 + pageBgRgb[1] * 587 + pageBgRgb[2] * 114) / 1000) >= 195;
 
-    // 1. 原排版文本块挂载 (纯 DOM 衬底覆盖保护，底图 Canvas 保持完整无损，实现 Alt 键透视原图秒级瞬时恢复)
+    // 1. 展开普通块与跨栏拆分块，统一预计算物理像素定位
+    const renderItems = [];
     blocks.forEach(block => {
-      if (!block.box) return;
-      if (block.type === 'formula') return; // 公式保持原图渲染
-      if (!block.transText) return;
+      if (!block.box || block.type === 'formula' || !block.transText) return;
+
+      const hasMultiSegments = Array.isArray(block.segmentBoxes) && block.segmentBoxes.length > 1;
+      const segTexts = hasMultiSegments ? splitTranslationForSegments(block.transText, block.segmentBoxes) : [block.transText];
+      const boxesList = hasMultiSegments ? block.segmentBoxes.map(s => s.box) : [block.box];
+
+      boxesList.forEach((box, segIdx) => {
+        if (!box) return;
+        const textPart = segTexts[segIdx] || '';
+        if (!textPart) return;
+
+        const left = Math.round(box.x * scale);
+        const top = Math.round((pageHeight - box.y - box.h) * scale);
+        const width = Math.max(Math.round(box.w * scale), 20);
+        const minHeight = Math.max(Math.round(box.h * scale), 12);
+
+        renderItems.push({
+          block,
+          box,
+          textPart,
+          segIndex: hasMultiSegments ? segIdx : -1,
+          left,
+          top,
+          width,
+          minHeight,
+          maxAllowedHeight: 0
+        });
+      });
+    });
+
+    // 2. 基于真实坐标预计算各块纵向可用空间（允许轻微余量，绝不压盖下一段文字）
+    for (let i = 0; i < renderItems.length; i++) {
+      const curr = renderItems[i];
+      let nextTop = Infinity;
+      for (let j = 0; j < renderItems.length; j++) {
+        if (i === j) continue;
+        const cand = renderItems[j];
+        if (cand.top <= curr.top + 4) continue;
+        const overlapX = Math.min(curr.left + curr.width, cand.left + cand.width) - Math.max(curr.left, cand.left);
+        if (overlapX > 6) {
+          nextTop = Math.min(nextTop, cand.top);
+        }
+      }
+      if (Number.isFinite(nextTop)) {
+        curr.maxAllowedHeight = Math.max(curr.minHeight, nextTop - curr.top - 1);
+      } else {
+        curr.maxAllowedHeight = Math.max(curr.minHeight, Math.round(pageHeight * scale - curr.top - 8));
+      }
+    }
+
+    // 3. 逐块挂载 DOM，并在已挂载舞台上做一次实测 scrollHeight 自适应微调
+    for (const item of renderItems) {
+      const { block, box, textPart, segIndex, left, top, width, minHeight, maxAllowedHeight } = item;
+
+      // 自愈旧版缓存中被边缘黑像素污染的背景色
+      let bgColor = block.style?.bgColor || pageBgStr;
+      let textColor = block.style?.color || '#1c1c1e';
+      if (stageCanvas && !block.layoutVersion && pageIsLight) {
+        const cachedBgRgb = parseRgbTriplet(bgColor);
+        const cachedLuma = (cachedBgRgb[0] * 299 + cachedBgRgb[1] * 587 + cachedBgRgb[2] * 114) / 1000;
+        if (cachedLuma < 175) {
+          const healed = sampleBlockColors(stageCanvas, box, pageHeight, scale);
+          bgColor = healed.bgColor;
+          textColor = healed.color;
+        }
+      }
 
       const overlayBlock = document.createElement('div');
       overlayBlock.className = 'trans-overlay-block';
@@ -3140,31 +3249,24 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (opacityModeIndex === 2) {
         overlayBlock.classList.add('mode-clear');
       } else {
-        overlayBlock.style.backgroundColor = block.style?.bgColor || '#ffffff';
+        overlayBlock.style.backgroundColor = bgColor;
       }
       overlayBlock.dataset.blockId = block.id;
 
-      const left = Math.round(block.box.x * scale);
-      const top = Math.round((pageHeight - block.box.y - block.box.h) * scale);
-      const width = Math.max(Math.round(block.box.w * scale), 20);
-      const minHeight = Math.max(Math.round(block.box.h * scale), 12);
-
-      // 原文字号 1:1 动态还原 (根据实际 PDF 变换矩阵计算的真实物理字号)
       const baseFontSize = block.style?.fontSize ? Math.round(block.style.fontSize * scale) : 13;
       const isBold = block.style?.isBold || false;
-      const textColor = (opacityModeIndex === 1) ? '#111827' : (block.style?.color || '#1c1c1e');
+      const resolvedColor = (opacityModeIndex === 1) ? '#111827' : textColor;
 
-      // 自适应弹性微调：根据译文字数与物理框高动态轻微微调字号，严丝合缝绝不挤压溢出下一段
-      const textLen = block.transText.length;
+      const textLen = textPart.length;
       const charW = Math.max(8, baseFontSize * 0.95);
       const charsPerLine = Math.max(1, Math.floor(width / charW));
       const neededLines = Math.ceil(textLen / charsPerLine);
-      const targetLineHeight = baseFontSize >= 22 ? 1.2 : (baseFontSize >= 15 ? 1.28 : 1.35);
-      const estTotalHeight = neededLines * baseFontSize * targetLineHeight;
+      let lineHeightVal = baseFontSize >= 22 ? 1.2 : (baseFontSize >= 15 ? 1.26 : 1.32);
+      const estTotalHeight = neededLines * baseFontSize * lineHeightVal;
 
       let finalFontSize = baseFontSize;
-      if (estTotalHeight > minHeight * 1.25 && minHeight >= 20) {
-        finalFontSize = Math.max(9, Math.round(baseFontSize * Math.sqrt(minHeight / estTotalHeight)));
+      if (estTotalHeight > maxAllowedHeight * 1.15 && maxAllowedHeight >= 18) {
+        finalFontSize = Math.max(8.5, Math.round(baseFontSize * Math.sqrt(maxAllowedHeight / estTotalHeight) * 10) / 10);
       }
 
       overlayBlock.style.left = `${left}px`;
@@ -3174,19 +3276,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
       overlayBlock.style.fontSize = `${finalFontSize}px`;
       overlayBlock.style.fontWeight = isBold ? '700' : 'normal';
-      overlayBlock.style.color = textColor;
-      overlayBlock.style.lineHeight = finalFontSize >= 22 ? '1.2' : (finalFontSize >= 15 ? '1.28' : '1.35');
+      overlayBlock.style.color = resolvedColor;
+      overlayBlock.style.lineHeight = String(lineHeightVal);
       if (block.type === 'heading') {
         overlayBlock.style.letterSpacing = '-0.2px';
       }
 
-      overlayBlock.textContent = block.transText;
+      overlayBlock.textContent = textPart;
       overlayBlock.title = `原文: ${block.originalText}\n(双击复制译文，点击联动对齐原文)`;
 
-      bindOverlayBlockInteractions(overlayBlock, block, pageNum, pageHeight, scale);
-
+      bindOverlayBlockInteractions(overlayBlock, block, pageNum, pageHeight, scale, segIndex);
       overlayLayer.appendChild(overlayBlock);
-    });
+
+      // 实测 DOM 渲染高度若仍超出下方可用空间，递减字号与行距避免跨段压盖
+      if (overlayLayer.isConnected && maxAllowedHeight > 0) {
+        let attempts = 0;
+        while (attempts < 6 && overlayBlock.scrollHeight > maxAllowedHeight + 2 && finalFontSize > 8.5) {
+          finalFontSize = Math.max(8.5, Math.round((finalFontSize - 0.8) * 10) / 10);
+          lineHeightVal = Math.max(1.14, Math.round((lineHeightVal - 0.04) * 100) / 100);
+          overlayBlock.style.fontSize = `${finalFontSize}px`;
+          overlayBlock.style.lineHeight = String(lineHeightVal);
+          attempts++;
+        }
+      }
+    }
   }
 
   // --- 方案 A：沉浸式双语对照流视图核心引擎 (Bilingual Flow Reader Engine) ---
@@ -3841,10 +3954,11 @@ document.addEventListener('DOMContentLoaded', () => {
     return restored;
   }
 
-  // 5. 页面语义块解析算法 (精准识别行、段落、图表、公式，支持双栏学术排版与标点清洗)
+  // 5. 页面语义块解析算法 (基于真实空白沟道检测单/多栏、保护完整段落几何盒与降部安全余量)
   async function extractPageBlocks(page, skipFormulas) {
     const textContent = await page.getTextContent();
     const items = textContent.items;
+    const styles = textContent.styles || {};
     if (!items || items.length === 0) return [];
 
     const viewport = page.getViewport({ scale: 1.0 });
@@ -3857,16 +3971,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const cleanStr = normalizePdfText(item.str);
         // 计算实际物理字号: 根据 transform 仿射变换矩阵
         const fontSize = Math.round(Math.hypot(item.transform[0], item.transform[1]) * 10) / 10 || item.height || 12;
-        const isBold = /bold|black|heavy|700/i.test(item.fontName || '');
+        const fontName = item.fontName || '';
+        const styleMeta = (fontName && styles[fontName]) ? styles[fontName] : {};
+        const fontFamily = styleMeta.fontFamily || '';
+        const isBold = /bold|black|heavy|demi|semibold|700|800|900/i.test(`${fontName} ${fontFamily}`);
+        const descentRatio = (typeof styleMeta.descent === 'number' && styleMeta.descent < 0)
+          ? Math.min(0.4, Math.max(0.28, Math.abs(styleMeta.descent) + 0.06))
+          : 0.28;
         return {
           str: cleanStr,
           x: item.transform[4],
           y: item.transform[5],
           w: item.width,
           h: item.height || Math.abs(item.transform[3]) || fontSize,
-          fontSize: fontSize,
-          isBold: isBold,
-          fontName: item.fontName || ''
+          fontSize,
+          isBold,
+          fontName,
+          descentRatio
         };
       })
       .filter(item => item.str.trim().length > 0);
@@ -3881,19 +4002,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // 1. 底部页脚区域判断 (距页面底部 48pt 以内)
       if (item.y < 48) {
-        // A. 纯页码或页码标记 (如 "12", "12 / 64", "Page 12 of 64", "- 12 -", "· 12 ·")
         if (/^[-—•·\s]*\d+[\s/–—•·\d]*$/i.test(str) || /^Page\s*\d+/i.test(str) || /^\d+\s*[\/|]\s*\d+$/i.test(str)) {
           return true;
         }
-        // B. 版权声明、出版日期、机构标记与免责声明 (如 "Copyright © 2024 Capgemini", "All rights reserved", "September 2024")
         if (/copyright|all\s*rights\s*reserved|©|issn|isbn|doi:|https?:|www\.|\.com\b|confidential|draft/i.test(str)) {
           return true;
         }
-        // C. 月份+年份的出版时间戳 (如 "September 2024", "Jan 2023")
         if (/^(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{4}\b/i.test(str)) {
           return true;
         }
-        // D. 底部极端边界 (< 36pt) 且字号 <= 11pt 的短文字行
         if (item.y < 36 && item.fontSize <= 11) {
           return true;
         }
@@ -3901,15 +4018,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // 2. 顶部页眉区域判断 (距页面顶部 50pt 以内)
       if (item.y > pageHeight - 50) {
-        // 第一页的正文大标题通常字号很大 (>= 15pt)，绝不能误判为页眉
         if (pageNum === 1 && item.fontSize >= 15) {
           return false;
         }
-        // 顶部纯页码、章节、期刊名或 DOI
         if (/^[-—•·\s]*\d+[\s/–—•·\d]*$/i.test(str) || /^Page\s*\d+/i.test(str)) {
           return true;
         }
-        // 顶部小字号单行标题/期号/DOI
         if (item.fontSize <= 11.5) {
           return true;
         }
@@ -3918,23 +4032,16 @@ document.addEventListener('DOMContentLoaded', () => {
       return false;
     }
 
-    // 聚合成物理 Y 分组 (Y 容差 3pt，上下标容差 0.55*fontSize，并绝对过滤页眉与页脚，保留原生排版底色)
+    // 聚合成物理 Y 分组 (Y 容差 3pt，上下标容差 0.55*fontSize，并过滤页眉与页脚)
     const rawYGroups = [];
     for (const item of validItems) {
-      // 忽略页眉页脚（正文之外的页码、版权、顶底跑头）
-      if (isHeaderOrFooterItem(item)) {
-        continue;
-      }
+      if (isHeaderOrFooterItem(item)) continue;
 
-      let group = rawYGroups.find(g => {
+      const group = rawYGroups.find(g => {
         const delta = Math.abs(g.y - item.y);
         if (delta <= 3) return true;
         const refFont = g.items[0] ? g.items[0].fontSize : 12;
-        // 上下标与学术符号基线容差：字号较小且基线偏差在 0.55 * fontSize 范围内，合并入当前物理行
-        if (delta <= refFont * 0.55 && (item.fontSize < refFont * 0.9 || Math.abs(item.fontSize - refFont) <= 2)) {
-          return true;
-        }
-        return false;
+        return delta <= refFont * 0.55 && (item.fontSize < refFont * 0.9 || Math.abs(item.fontSize - refFont) <= 2);
       });
       if (group) {
         group.items.push(item);
@@ -3943,7 +4050,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // 针对每个物理 Y 行，依据水平 X 间隙 (X-Gap) 与字号差异分割为独立线段，彻底避免左右分栏与图表被粘连
+    // 针对每个物理 Y 行，依据水平 X 间隙 (X-Gap) 与字号差异分割为独立线段
     const processedLines = [];
     for (const group of rawYGroups) {
       group.items.sort((a, b) => a.x - b.x);
@@ -3957,7 +4064,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const xGap = curr.x - (prev.x + prev.w);
         const refFont = Math.max(prev.fontSize, curr.fontSize);
 
-        // 阈值：水平间隙超过 1.6 倍字号且绝对距离 > 14pt，或字号差距大于 5pt，分割为不同线段
         const maxGap = Math.max(14, refFont * 1.6);
         if (xGap > maxGap || Math.abs(curr.fontSize - prev.fontSize) > 5) {
           segments.push(currSeg);
@@ -3986,8 +4092,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const minY = Math.min(...seg.map(it => it.y));
         const maxY = Math.max(...seg.map(it => it.y + it.h));
         const avgFontSize = seg.reduce((s, it) => s + it.fontSize, 0) / seg.length;
+        const maxDescentRatio = Math.max(...seg.map(it => it.descentRatio || 0.28));
         const anyBold = seg.some(it => it.isBold);
-        const fontName = seg[0].fontName;
+
+        // 按字符数统计该行主导字体句柄，识别未在字体名写明 Bold 的小标题
+        const fontCounts = new Map();
+        let totalChars = 0;
+        for (const it of seg) {
+          const len = (it.str || '').trim().length || 1;
+          totalChars += len;
+          fontCounts.set(it.fontName, (fontCounts.get(it.fontName) || 0) + len);
+        }
+        let dominantFontName = seg[0].fontName;
+        let domChars = 0;
+        fontCounts.forEach((cnt, fname) => {
+          if (cnt > domChars) { domChars = cnt; dominantFontName = fname; }
+        });
+        const isUniformFont = totalChars > 0 ? (domChars / totalChars) >= 0.8 : true;
 
         processedLines.push({
           text: text.trim(),
@@ -3996,251 +4117,27 @@ document.addEventListener('DOMContentLoaded', () => {
           w: maxX - minX,
           h: maxY - minY,
           fontSize: avgFontSize,
+          descentRatio: maxDescentRatio,
           isBold: anyBold,
-          fontName: fontName,
+          fontName: dominantFontName,
+          dominantFontName,
+          isUniformFont,
           box: { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
         });
       }
     }
 
-    // 1. 宽幅贯穿行与居中大标题识别 (页面主标题、通栏说明，宽度 > 54% 页面宽度，或居中大标题)
-    const topWideSpans = [];
-    const bottomWideSpans = [];
-    const columnLineCandidates = [];
+    const { orderedLines, isMultiColumn } = orderLinesByLayout(processedLines, pageWidth, pageHeight);
 
-    for (const line of processedLines) {
-      const isCenteredHeading = (line.fontSize >= 13.5 || (line.isBold && line.fontSize >= 12)) &&
-        Math.abs((line.x + line.w / 2) - pageWidth / 2) < (pageWidth * 0.16) &&
-        line.w < pageWidth * 0.75;
-
-      if (line.w > pageWidth * 0.54 || (isCenteredHeading && line.y > pageHeight * 0.45)) {
-        if (line.y > pageHeight * 0.5) {
-          topWideSpans.push(line);
-        } else {
-          bottomWideSpans.push(line);
-        }
-      } else {
-        columnLineCandidates.push(line);
-      }
-    }
-
-    // 2. 动态多栏自适应聚类 (支持 1 栏、2 栏、3 栏及任意多栏排版)
-    // 根据非贯穿行的水平位置 (X 与 X+W) 聚合为独立的纵向栏轨道 (Column Tracks)
-    const columns = [];
-    const sortedCandidates = [...columnLineCandidates].sort((a, b) => a.x - b.x);
-
-    for (const line of sortedCandidates) {
-      let matchedCol = null;
-      for (const col of columns) {
-        const isLeftAligned = Math.abs(line.x - col.minX) < 40;
-        const colOverlap = Math.min(col.maxX, line.x + line.w) - Math.max(col.minX, line.x);
-        const colWidth = col.maxX - col.minX;
-        // 水平左边缘对齐，或者与该栏水平投影有显著重叠且宽度相仿（避免宽行串入窄栏桥接）
-        const isSimilarWidth = Math.abs(line.w - colWidth) < 70 || colOverlap > line.w * 0.5;
-        if ((isLeftAligned && isSimilarWidth) || (colOverlap > 14 && isSimilarWidth)) {
-          matchedCol = col;
-          break;
-        }
-      }
-
-      if (matchedCol) {
-        matchedCol.lines.push(line);
-        matchedCol.minX = Math.min(matchedCol.minX, line.x);
-        matchedCol.maxX = Math.max(matchedCol.maxX, line.x + line.w);
-      } else {
-        columns.push({
-          minX: line.x,
-          maxX: line.x + line.w,
-          lines: [line]
-        });
-      }
-    }
-
-    // 从左到右排序列
-    columns.sort((a, b) => a.minX - b.minX);
-
-    // 每列内部按 Y 从上到下排布
-    for (const col of columns) {
-      col.lines.sort((a, b) => b.y - a.y);
-    }
-
-    topWideSpans.sort((a, b) => b.y - a.y);
-    bottomWideSpans.sort((a, b) => b.y - a.y);
-
-    // 合成自然阅读顺序：顶部大标题 -> 第一栏从上到下 -> 第二栏从上到下 -> 第三栏从上到下 -> 底部注脚
-    const orderedLines = [
-      ...topWideSpans,
-      ...columns.flatMap(col => col.lines),
-      ...bottomWideSpans
-    ];
-
-    // 按段落、行距、标题、图表将行聚合成语义块，并保留精确包围盒与字号样式
-    const blocks = [];
-    let currentParagraphLines = [];
-
-    function flushParagraph() {
-      if (currentParagraphLines.length === 0) return;
-      const mergedText = healAcademicSymbols(reconstructPdfParagraphs(currentParagraphLines.map(l => l.text).join('\n')));
-      if (mergedText && mergedText.trim()) {
-        const minX = Math.min(...currentParagraphLines.map(l => l.box.x));
-        const maxX = Math.max(...currentParagraphLines.map(l => l.box.x + l.box.w));
-        const minY = Math.min(...currentParagraphLines.map(l => l.box.y));
-        const maxY = Math.max(...currentParagraphLines.map(l => l.box.y + l.box.h));
-
-        const avgFontSize = currentParagraphLines.reduce((s, l) => s + l.fontSize, 0) / currentParagraphLines.length;
-        const isBold = currentParagraphLines.some(l => l.isBold);
-        const fontName = currentParagraphLines[0].fontName || '';
-
-        // 核心过滤：绝对排除页眉页脚语义块（正文之外不遮挡、不翻译，保留原版图层）
-        const isBlockFooter = (minY < 48 && (avgFontSize <= 11.5 || /copyright|all\s*rights|©/i.test(mergedText)));
-        const isBlockHeader = (maxY > pageHeight - 50 && avgFontSize <= 11.5 && !(pageNum === 1 && avgFontSize >= 15));
-        if (isBlockFooter || isBlockHeader) {
-          currentParagraphLines = [];
-          return;
-        }
-
-        let blockType = 'paragraph';
-        if (currentParagraphLines.some(l => l.isCaption) || avgFontSize <= 9.5 || isChartCaption(mergedText)) {
-          blockType = 'caption';
-        } else if (avgFontSize >= 16 || (isBold && avgFontSize >= 12.5 && currentParagraphLines.length <= 2)) {
-          blockType = 'heading';
-        }
-
-        // 识别是否跨栏 (多栏跨度突变)
-        const isCrossColumn = (maxX - minX > pageWidth * 0.45) && (maxY - minY > pageHeight * 0.35);
-
-        let blockBox = {
-          x: Math.max(0, minX - 1),
-          y: minY,
-          w: Math.min(pageWidth - minX, maxX - minX + 2),
-          h: maxY - minY
-        };
-
-        // 若跨栏合并导致包围盒横跨半个以上页面，原位排版回退为起点栏包围盒，避免遮蔽中间区域；完整双语在 Flow 流视图中呈现
-        if (isCrossColumn && currentParagraphLines.length > 0) {
-          const firstLine = currentParagraphLines[0];
-          blockBox = {
-            x: Math.max(0, firstLine.box.x - 1),
-            y: firstLine.box.y,
-            w: Math.min(pageWidth - firstLine.box.x, firstLine.box.w + 2),
-            h: firstLine.box.h
-          };
-        }
-
-        blocks.push({
-          id: `block-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-          pageNum: pageNum,
-          pageHeight: pageHeight,
-          type: blockType,
-          originalText: mergedText.trim(),
-          isCrossColumn: isCrossColumn,
-          lineBoxes: currentParagraphLines.map(l => ({ ...l.box })),
-          box: blockBox,
-          style: {
-            fontSize: Math.round(avgFontSize * 10) / 10,
-            isBold: isBold,
-            fontName: fontName
-          }
-        });
-      }
-      currentParagraphLines = [];
-    }
-
-    for (let i = 0; i < orderedLines.length; i++) {
-      const lineObj = orderedLines[i];
-      const text = lineObj.text;
-
-      // 1) 独立数学公式检测
-      if (isFormulaText(text)) {
-        flushParagraph();
-        blocks.push({
-          id: `block-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-          pageNum: pageNum,
-          pageHeight: pageHeight,
-          type: 'formula',
-          originalText: text,
-          box: lineObj.box,
-          style: {
-            fontSize: Math.round(lineObj.fontSize * 10) / 10,
-            isBold: lineObj.isBold,
-            fontName: lineObj.fontName
-          }
-        });
-        continue;
-      }
-
-      // 2) 图表/表格说明起始检测 (若为多行说明，自动延续合并至标点闭合)
-      if (isChartCaption(text)) {
-        if (currentParagraphLines.length > 0) {
-          flushParagraph();
-        }
-        lineObj.isCaption = true;
-      }
-
-      // 3) 段落分界检测：基于句法标点闭合、排版连字符、跨栏检测与段距综合判断
-      if (currentParagraphLines.length > 0) {
-        const prevLine = currentParagraphLines[currentParagraphLines.length - 1];
-        const lineGap = prevLine.y - lineObj.y;
-        const avgH = (prevLine.h + lineObj.h) / 2;
-        const fontDiff = Math.abs(prevLine.fontSize - lineObj.fontSize);
-        const xOffset = Math.abs(prevLine.x - lineObj.x);
-
-        const prevText = prevLine.text.trim();
-        const currText = lineObj.text.trim();
-
-        // 句法语义特征：
-        // 前行是否以断句标点结尾 (. ! ? : 。 ！ ？)
-        const prevEndsWithTerminal = /[\.\?!。？！:：]$/.test(prevText);
-        // 前行是否以连字符切词换行 (如 "infra-")
-        const prevEndsWithHyphen = /[-—]\s*$/.test(prevText);
-        // 当前行是否以小写字母开头 (说明属于前一句话的半截未完从句)
-        const currStartsWithLower = /^[a-z]/.test(currText);
-        // 当前行是否为独立列表项 (如 "1.", "•", "- ")
-        const currIsListItem = /^([-*•·]|(?:\d+|[a-zA-Z])[\.)])\s+/.test(currText);
-        // 样式突变 (字号差超过 2.2pt 或 粗细变化且为短行标题)
-        const isHeaderStyleChange = fontDiff > 2.2 || (prevLine.isBold !== lineObj.isBold && (prevText.length < 50 || currText.length < 50));
-        // 跨越纵向栏轨道 (Y 逆向上跳或 X 跨栏突变 > 60pt)
-        const isColumnJump = (lineGap < -5) || (xOffset > 60);
-
-        let shouldBreak = false;
-
-        // 核心突破：跨栏未闭合句子与切词连字符无缝缝合 (Cross-Column Stitching)
-        // 论文/研报从栏1底跳转至栏2顶时，若前行未以终结标点结束或前行有连字符或后行小写开头，绝对属于同一完整句子与段落，不可切碎！
-        const isCrossColumnContinuation = isColumnJump && !isHeaderStyleChange && !currIsListItem &&
-          (prevEndsWithHyphen || currStartsWithLower || !prevEndsWithTerminal);
-
-        // 若当前处于图表说明 (Caption) 收集：遇到终结标点前持续合并邻近行
-        const isCaptionCollecting = currentParagraphLines.some(l => l.isCaption);
-        if (isCaptionCollecting && !prevEndsWithTerminal && lineGap < avgH * 2.2 && !isColumnJump) {
-          shouldBreak = false;
-        } else if (isCrossColumnContinuation) {
-          shouldBreak = false;
-        } else if (isColumnJump || isHeaderStyleChange || currIsListItem) {
-          shouldBreak = true;
-        } else if (prevEndsWithHyphen || currStartsWithLower) {
-          // 极高优先级连贯规则：前行连字符截断或当前行小写字母开头，语法上绝不可拆成两段！
-          // 除非垂直间距巨大 (超过 3.2 倍行高，说明版面存在插入图表)
-          shouldBreak = (lineGap > avgH * 3.2);
-        } else if (!prevEndsWithTerminal) {
-          // 前行未出现任何结束标点 (句子在行尾自然折行): 必须作为同一段合并！
-          // 仅在垂直间隙明显大于段落正常行距 (>= 2.4 倍) 时切断
-          shouldBreak = (lineGap > avgH * 2.4);
-        } else {
-          // 前行确实存在结束标点 (. ! ? :):
-          // 仅当存在明显的段间留白 (lineGap > avgH * 1.85) 或 首行缩进 (lineObj.x - prevLine.x > 14) 时才断开
-          shouldBreak = (lineGap > avgH * 1.85) || (lineObj.x - prevLine.x > 14);
-        }
-
-        if (shouldBreak) {
-          flushParagraph();
-        }
-      }
-
-      currentParagraphLines.push(lineObj);
-    }
-
-    flushParagraph();
-    return blocks;
+    return buildParagraphBlocks(orderedLines, {
+      pageWidth,
+      pageHeight,
+      pageNum,
+      isMultiColumn,
+      isFormulaText,
+      isChartCaption,
+      reconstructText: (raw) => healAcademicSymbols(reconstructPdfParagraphs(raw))
+    });
   }
 
   // 6. 异步调用后台翻译 API (支持指定具体模型如 GLM-4-Flash)
