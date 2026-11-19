@@ -48,8 +48,11 @@ export function unmaskNumericEntities(translatedText, tokenMap) {
 
   let result = translatedText;
   tokenMap.forEach((originalValue, token) => {
-    const fuzzyRegex = new RegExp(token.replace(/_/g, '[_\\s]?'), 'gi');
-    result = result.replace(fuzzyRegex, originalValue);
+    const m = token.match(/^__([A-Z_]+?)_(\d+)__$/);
+    const fuzzyRegex = m
+      ? new RegExp(`_{1,2}\\s*${m[1]}[_\\s]*${m[2]}(?!\\d)\\s*_{0,2}`, 'gi')
+      : new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    result = result.replace(fuzzyRegex, () => originalValue);
   });
 
   return result;
@@ -104,9 +107,11 @@ export function unmaskBioEntities(translatedText, tokenMap) {
 
   let result = translatedText;
   tokenMap.forEach((originalValue, token) => {
-    // 兼容可能被大模型附加空格或转小写的容错
-    const fuzzyRegex = new RegExp(token.replace(/_/g, '[_\\s]?'), 'gi');
-    result = result.replace(fuzzyRegex, originalValue);
+    const m = token.match(/^__([A-Z_]+?)_(\d+)__$/);
+    const fuzzyRegex = m
+      ? new RegExp(`_{1,2}\\s*${m[1]}[_\\s]*${m[2]}(?!\\d)\\s*_{0,2}`, 'gi')
+      : new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    result = result.replace(fuzzyRegex, () => originalValue);
   });
 
   return result;

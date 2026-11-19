@@ -19,12 +19,16 @@ import { academicLatinTerms } from './data/academic_latin_multilingual.js';
 import { extendedDoctoralTerms } from './data/extended_disciplines.js';
 import { doctoralExpansion2Terms } from './data/doctoral_expansion_2.js';
 import { doctoralExpansion3Terms } from './data/doctoral_expansion_3.js';
+import { chemOrganicReagentsMechanismsTerms } from './data/chem_organic_reagents_mechanisms.js';
+import { chemPhysicalQuantumTerms } from './data/chem_physical_quantum_computational.js';
+import { chemInorganicElectroPolymerGreenTerms } from './data/chem_inorganic_electro_polymer_green.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 1. 读取旧版 623 词条
+// 1. 读取旧版基础词条
 const oldDataPath = path.join(__dirname, '../data/biochem_terms.json');
+const extDataPath = path.join(__dirname, '../../src/data/biochem_terms.json');
 let legacyTerms = {};
 if (fs.existsSync(oldDataPath)) {
   try {
@@ -132,11 +136,26 @@ function toCanonicalEnglish(str) {
 
 const masterDictionary = {};
 
-// 2. 将旧版 623 词条提升为富对象结构
+const AMBIGUOUS_STOPWORDS = new Set([
+  'as', 'be', 'is', 'me', 'her', 'hat', 'set', 'tea', 'bet', 'elf', 'pet', 'mom',
+  'mr', 'om', 'al', 'pe', 'de', 'ea', 'ac', 'kr', 'rt', 'ce', 'cl', 'ti', 'pi',
+  'in', 'on', 'at', 'to', 'of', 'or', 'no', 'so', 'by', 'it', 'an', 'am', 'pm',
+  'pop', 'ice', 'cat', 'pin', 'she', 'red', 'gas', 'ion', 'age', 'run', 'bar',
+  'pad', 'sap', 'arc', 'map', 'peg', 'pan', 'pep', 'sin', 'cos', 'tan', 'dry',
+  'wet', 'hot', 'old', 'new', 'air', 'oil', 'ash', 'wax', 'tar', 'dye', 'ore', 'gel',
+  'del', 'etc'
+]);
+
+// 2. 将旧版词条提升为富对象结构（过滤停用词与历史二次编译产生的异常复数派生键，保障多次编译幂等）
 for (const [key, val] of Object.entries(legacyTerms)) {
   const normKey = key.trim().toLowerCase();
+  if (AMBIGUOUS_STOPWORDS.has(normKey)) continue;
+  const rawEn = (val && typeof val === 'object') ? String(val.en || '') : '';
+  const rawZh = (val && typeof val === 'object') ? String(val.zh || val.translation || '') : String(val || '');
+  if (rawEn.includes('(复数)') || rawZh.includes(' 缩写)')) continue;
+  if (/(?:ieses|rses|tses|icses|mses|nses|dses|sis(?:es))$/i.test(normKey)) continue;
   const canonicalEn = toCanonicalEnglish(normKey);
-  const zh = typeof val === 'object' ? (val.zh || val.translation) : val;
+  const zh = rawZh;
   const abbr = knownAbbrs[normKey] || (typeof val === 'object' ? val.abbr : '') || '';
   const category = (typeof val === 'object' ? val.category : '') || inferCategory(normKey, zh);
   const otherLangs = (typeof val === 'object' ? val.otherLangs : {}) || {};
@@ -167,8 +186,21 @@ const curatedModules = [
   ...academicLatinTerms,
   ...extendedDoctoralTerms,
   ...doctoralExpansion2Terms,
-  ...doctoralExpansion3Terms
+  ...doctoralExpansion3Terms,
+  ...chemOrganicReagentsMechanismsTerms,
+  ...chemPhysicalQuantumTerms,
+  ...chemInorganicElectroPolymerGreenTerms
 ];
+
+// 与常见英文单词同形的缩写仅保留为词条元数据，不单独注入小写索引，避免全文误匹配
+const AMBIGUOUS_ABBRS = new Set([
+  'A', 'C', 'G', 'T', 'U', 'N', 'K', 'M', 'V', 'DG', 'PG', 'AE', 'OA', 'RE',
+  'SET', 'HAT', 'TEA', 'POP', 'BET', 'ICE', 'CAT', 'PIN', 'SHE', 'RED',
+  'GAS', 'ION', 'AGE', 'RUN', 'BAR', 'PAD', 'SAP', 'ARC', 'MAP', 'PEG',
+  'PAN', 'PEP', 'SIN', 'COS', 'TAN', 'DRY', 'WET', 'HOT', 'OLD', 'NEW',
+  'AIR', 'OIL', 'ASH', 'WAX', 'TAR', 'DYE', 'ORE', 'GEL', 'HER',
+  'ELF', 'PET', 'MOM', 'DEL', 'ETC'
+]);
 
 for (const item of curatedModules) {
   const normKey = item.en.trim().toLowerCase();
@@ -180,14 +212,16 @@ for (const item of curatedModules) {
     otherLangs: item.otherLangs || {}
   };
 
-  // 注入缩写索引，确保缩写命中
-  if (item.abbr && item.abbr.length >= 2 && !['A', 'C', 'G', 'T', 'U', 'N', 'K', 'M', 'V', 'DG', 'PG', 'AE', 'OA', 'RE'].includes(item.abbr)) {
-    const abbrKey = item.abbr.toLowerCase();
+  // 注入无歧义缩写索引，确保缩写命中
+  const rawAbbr = (item.abbr || '').trim();
+  const upperAbbr = rawAbbr.toUpperCase();
+  if (rawAbbr.length >= 3 && !/\s/.test(rawAbbr) && !AMBIGUOUS_ABBRS.has(upperAbbr)) {
+    const abbrKey = rawAbbr.toLowerCase();
     if (!masterDictionary[abbrKey]) {
       masterDictionary[abbrKey] = {
-        en: item.abbr,
+        en: rawAbbr,
         zh: `${item.zh} (${item.en} 缩写)`,
-        abbr: item.abbr,
+        abbr: rawAbbr,
         category: item.category,
         otherLangs: item.otherLangs || {}
       };
@@ -387,14 +421,18 @@ const existingKeys = Object.keys(masterDictionary);
 for (const k of existingKeys) {
   const entry = masterDictionary[k];
   if (!entry || k.length < 3) continue;
+  if ((entry.zh || '').includes(' 缩写)') || (entry.abbr && entry.en === entry.abbr)) continue;
+  if (/^[a-z0-9\-/]+$/i.test(k) && k.length <= 5 && k === k.toLowerCase() && entry.abbr && entry.abbr.toLowerCase() === k) continue;
 
-  // 复数形态衍生 (如 enantiomer -> enantiomers, receptor -> receptors)
+  // 复数形态衍生 (如 enantiomer -> enantiomers, synthesis -> syntheses)
   let pluralKey = null;
-  if (k.endsWith('y') && !k.endsWith('ay') && !k.endsWith('ey') && !k.endsWith('oy')) {
+  if (k.endsWith('sis') || k.endsWith('lysis')) {
+    pluralKey = k.slice(0, -2) + 'es';
+  } else if (k.endsWith('y') && !k.endsWith('ay') && !k.endsWith('ey') && !k.endsWith('oy')) {
     pluralKey = k.slice(0, -1) + 'ies';
-  } else if (k.endsWith('s') || k.endsWith('x') || k.endsWith('ch') || k.endsWith('sh')) {
+  } else if (k.endsWith('x') || k.endsWith('ch') || k.endsWith('sh') || k.endsWith('ss')) {
     pluralKey = k + 'es';
-  } else if (!k.endsWith('s')) {
+  } else if (!k.endsWith('s') && /[a-z]$/.test(k)) {
     pluralKey = k + 's';
   }
 
@@ -408,7 +446,7 @@ for (const k of existingKeys) {
     };
   }
 
-  // 动名词/分词形式衍生 (如 blot -> blotting, couple -> coupling)
+  // 动名词/分词形式衍生 (如 blot -> blotting)
   if (k.endsWith(' blot')) {
     const blotKey = k + 'ting';
     if (!masterDictionary[blotKey]) {
@@ -423,37 +461,46 @@ for (const k of existingKeys) {
   }
 }
 
+const disciplinesList = [
+  "有机合成与不对称催化 (Organic Synthesis & Asymmetric Catalysis)",
+  "物理有机、反应机理与常用试剂溶剂 (Physical Organic, Mechanisms & Reagents)",
+  "物理化学、量子化学与计算模拟 (Physical, Quantum & Computational Chemistry)",
+  "无机配位与固体晶体化学 (Inorganic Coordination & Solid-State Chemistry)",
+  "电化学、电催化与新能源电池 (Electrochemistry, Electrocatalysis & Batteries)",
+  "高分子化学与胶体界面科学 (Polymer, Colloid & Interface Chemistry)",
+  "分析化学与波谱/X射线表征 (Analytical Chemistry & Spectroscopy)",
+  "绿色合成、流动化学与实验室安全 (Green Chemistry, Flow & Lab Safety)",
+  "材料化学、纳米科学与催化 (Materials, Nanotechnology & Catalysis)",
+  "分子生物学与表观遗传学 (Molecular Biology & Epigenetics)",
+  "结构生物学与冷冻电镜 (Structural Biology & Cryo-EM)",
+  "生物化学与细胞代谢 (Biochemistry & Cellular Metabolism)",
+  "免疫学与生物大分子药物 (Immunology & Biologics)",
+  "药物化学与药代动力学 (Medicinal Chemistry & DMPK)",
+  "细胞生物学与细胞器病理 (Cell Biology & Organelle Dynamics)",
+  "神经生物学与电生理学 (Neurobiology & Electrophysiology)",
+  "合成生物学与代谢工程 (Synthetic Biology & Metabolic Engineering)",
+  "经典学术拉丁语与科技德语词源 (Academic Latin & German Etymology in Science)"
+];
+
 // 7. 统计总数并输出
 const totalCount = Object.keys(masterDictionary).length;
 console.log(`\n========================================`);
 console.log(`博士级多语种生化词库汇编完成！`);
 console.log(`有效权威词条总数: ${totalCount} 条`);
-console.log(`覆盖学科: 13 大前沿博士级门类`);
+console.log(`覆盖学科: ${disciplinesList.length} 大前沿博士级门类`);
 console.log(`结构规范: 中英文对照 (en, zh) + 标准缩写 (abbr) + 学科分类 (category) + 国际多语种 (otherLangs)`);
 console.log(`========================================\n`);
 
 const fullOutput = {
   description: "化学、生物学、药学与前沿材料交叉学科博士级多语种学术术语知识库 (遵循 IUPAC、CAS、中国化学会及全国科学技术名词审定委员会规范)",
-  version: "3.2.0",
+  version: "3.3.0",
   updatedAt: new Date().toISOString(),
   totalCount: totalCount,
-  disciplines: [
-    "有机合成与不对称催化 (Organic Synthesis & Asymmetric Catalysis)",
-    "分子生物学与表观遗传学 (Molecular Biology & Epigenetics)",
-    "结构生物学与冷冻电镜 (Structural Biology & Cryo-EM)",
-    "生物化学与细胞代谢 (Biochemistry & Cellular Metabolism)",
-    "免疫学与生物大分子药物 (Immunology & Biologics)",
-    "药物化学与药代动力学 (Medicinal Chemistry & DMPK)",
-    "分析化学与质谱色谱 (Analytical Chemistry, MS & Chromatography)",
-    "细胞生物学与细胞器病理 (Cell Biology & Organelle Dynamics)",
-    "材料化学、纳米科学与电催化 (Materials, Nanotechnology & Electrocatalysis)",
-    "无机配位与超分子化学 (Inorganic Coordination & Supramolecular Chemistry)",
-    "神经生物学与电生理学 (Neurobiology & Electrophysiology)",
-    "合成生物学与代谢工程 (Synthetic Biology & Metabolic Engineering)",
-    "经典学术拉丁语与科技德语词源 (Academic Latin & German Etymology in Science)"
-  ],
+  disciplines: disciplinesList,
   terms: masterDictionary
 };
 
-fs.writeFileSync(oldDataPath, JSON.stringify(fullOutput, null, 2), 'utf-8');
-console.log(`已成功覆写持久化至: ${oldDataPath}`);
+const serialized = JSON.stringify(fullOutput, null, 2);
+fs.writeFileSync(oldDataPath, serialized, 'utf-8');
+fs.writeFileSync(extDataPath, serialized, 'utf-8');
+console.log(`已成功同步持久化至:\n  - ${oldDataPath}\n  - ${extDataPath}`);

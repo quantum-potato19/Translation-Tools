@@ -43,6 +43,8 @@ body {
   position: relative;
   width: 420px;
   max-width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.4);
   background: rgba(255, 255, 255, 0.9);
@@ -86,6 +88,7 @@ body {
 /* Sidebar Layout */
 .sidebar {
   width: 250px;
+  flex-shrink: 0;
   background-color: rgba(255, 255, 255, 0.4);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
@@ -860,6 +863,93 @@ input:checked + .slider:before {
   color: #a1a1aa;
 }
 
+/* iOS 通用按钮设计规范 (.ios-button / primary-btn / secondary-btn) */
+.ios-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  border: 1px solid transparent;
+  font-family: inherit;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.ios-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ios-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ios-button.primary-btn {
+  background: linear-gradient(135deg, #0A84FF, #5E5CE6);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(10, 132, 255, 0.25);
+}
+
+.ios-button.primary-btn:hover:not(:disabled) {
+  filter: brightness(1.05);
+  box-shadow: 0 4px 12px rgba(10, 132, 255, 0.32);
+}
+
+.ios-button.secondary-btn {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.09);
+  color: #1c1c1e;
+}
+
+.ios-button.secondary-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.14);
+}
+
+/* Token 监控仪表盘样式 */
+.token-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.token-hard-limit-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 500;
+  background: rgba(0, 0, 0, 0.05);
+  color: #636366;
+}
+
+.token-engine-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.token-engine-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 122, 255, 0.07);
+  border: 1px solid rgba(0, 122, 255, 0.15);
+  font-size: 11px;
+  color: #3a3a3c;
+}
+
 .danger-btn {
   border: 1px solid rgba(255, 59, 48, 0.3) !important;
   background: rgba(255, 59, 48, 0.08) !important;
@@ -988,8 +1078,10 @@ input:checked + .slider:before {
 }
 
 .save-toast.hidden {
+  display: block !important;
   opacity: 0;
   transform: translateY(12px);
+  pointer-events: none;
 }
 
 

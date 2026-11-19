@@ -8,6 +8,8 @@ body {
   margin: 0;
   padding: 0;
   width: 360px;
+  min-height: 360px;
+  position: relative;
   background-color: #f2f2f7;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color: #1c1c1e;
@@ -313,6 +315,48 @@ textarea::placeholder {
 .result-content-wrapper {
   position: relative;
   min-height: 40px;
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.token-indicator-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  margin-top: 8px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.03);
+  font-size: 11px;
+  color: #8e8e93;
+}
+
+.token-indicator-left {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.token-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34C759;
+  flex-shrink: 0;
+}
+
+.token-settings-link {
+  color: #007AFF;
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 500;
+  transition: opacity 0.15s ease;
+}
+
+.token-settings-link:hover {
+  text-decoration: underline;
+  opacity: 0.85;
 }
 
 #result-text {

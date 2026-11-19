@@ -101,7 +101,7 @@ import {
       position: fixed;
       pointer-events: auto;
       width: 380px;
-      min-width: 300px;
+      min-width: 330px;
       min-height: 160px;
       border-radius: 20px;
       border: 1px solid rgba(255, 255, 255, 0.4);
@@ -206,20 +206,20 @@ import {
     }
 
     #panel-target-lang {
-      max-width: 78px;
-      min-width: 54px;
+      max-width: 74px;
+      min-width: 52px;
       flex: 0 1 auto;
     }
 
     #panel-engine-select {
-      max-width: 90px;
-      min-width: 58px;
+      max-width: 88px;
+      min-width: 56px;
       flex: 0 1 auto;
     }
 
     #panel-model-select {
-      max-width: 112px;
-      min-width: 64px;
+      max-width: 118px;
+      min-width: 66px;
       flex: 1 1 auto;
     }
 
@@ -480,6 +480,19 @@ import {
         background: rgba(255, 255, 255, 0.1);
         color: #f2f2f7;
       }
+      .panel-select option {
+        background: #2c2c2e;
+        color: #f2f2f7;
+      }
+      .panel-icon-btn:hover,
+      .panel-close:hover {
+        background: rgba(255, 255, 255, 0.12);
+        color: #ffffff;
+      }
+      .panel-icon-btn.active {
+        background: rgba(10, 132, 255, 0.25);
+        color: #409cff;
+      }
       .panel-source-text {
         color: #98989d;
       }
@@ -550,7 +563,7 @@ import {
         <div class="panel-toolbar-row">
           <span style="font-size:11.5px; color:#8e8e93; font-weight:500;">译文</span>
           <div class="panel-btn-group">
-            <button id="panel-bilingual-btn" class="panel-icon-btn active" title="专有名词双语备注：开启中（点击切换）" style="font-size:10.5px; font-weight:600; width:auto; min-width:22px; padding:0 4px;">双语</button>
+            <button id="panel-bilingual-btn" class="panel-icon-btn active" title="专有名词双语备注：开启中（点击切换）" style="font-size:10.5px; font-weight:600; width:auto; min-width:22px; padding:2px 6px; border-radius:6px;">双语</button>
             <button id="panel-speak-res-btn" class="panel-icon-btn" title="朗读译文">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
             </button>
@@ -651,7 +664,7 @@ import {
 
   // 从 storage 读取并恢复用户偏好的浮窗宽度
   chrome.storage.local.get({ contentPanelWidth: 380 }, (res) => {
-    if (res.contentPanelWidth && res.contentPanelWidth >= 300) {
+    if (res.contentPanelWidth && res.contentPanelWidth >= 330) {
       translatePanel.style.width = `${res.contentPanelWidth}px`;
     }
   });
@@ -672,8 +685,8 @@ import {
         newWidth = startWidth - (moveEvent.clientX - startX);
       }
 
-      // 限制宽度范围：300px ~ 720px
-      newWidth = Math.max(300, Math.min(720, newWidth));
+      // 限制宽度范围：330px ~ 720px，确保顶部语言/引擎/模型选择器与固定/关闭按钮不拥挤换行
+      newWidth = Math.max(330, Math.min(720, newWidth));
       translatePanel.style.width = `${newWidth}px`;
 
       if (direction === 'left') {
@@ -791,9 +804,17 @@ import {
 
   loadAvailableEngines();
 
-  // 监听 storage 变更，及时更新可用引擎及双语按钮状态
-  const handleEngineStorageChange = (changes) => {
-    loadAvailableEngines();
+  // 监听 storage 变更，仅当引擎或模型配置变更时刷新可用引擎列表（避免 tokenUsageStats 等高频写入导致抖动）
+  const ENGINE_WATCH_KEYS = new Set([
+    'glmApiKey', 'glmModels', 'geminiApiKey', 'geminiModels',
+    'deepseekApiKey', 'deepseekModels', 'deeplApiKey', 'deeplEndpoint',
+    'youdaoAppKey', 'youdaoAppSecret', 'customModels'
+  ]);
+  const handleEngineStorageChange = (changes, area) => {
+    if (area && area !== 'local') return;
+    if (Object.keys(changes).some(k => ENGINE_WATCH_KEYS.has(k))) {
+      loadAvailableEngines();
+    }
     if (changes.enableBilingualNotation && panelBilingualBtn) {
       const isBilingual = changes.enableBilingualNotation.newValue !== false;
       panelBilingualBtn.classList.toggle('active', isBilingual);
@@ -967,7 +988,7 @@ import {
     
     // 若面板已处于固定展示状态，保持当前位置不跳动
     if (!isPinned || !translatePanel.classList.contains('show')) {
-      const panelWidth = translatePanel.offsetWidth || 360;
+      const panelWidth = translatePanel.offsetWidth || parseInt(translatePanel.style.width, 10) || 380;
       const panelHeight = translatePanel.offsetHeight || 220;
       const safeX = Math.max(10, Math.min(x, window.innerWidth - panelWidth - 16));
       const safeY = Math.max(10, Math.min(y, window.innerHeight - panelHeight - 16));
@@ -1084,14 +1105,19 @@ import {
     });
   }
 
+  let translateSeq = 0;
+
   // 发起翻译请求 (支持长连接 SSE 逐字打字机流式输出与单词权威定名即时命中)
   function doTranslation(text, engine, targetLang, modelName) {
     if (window.speechSynthesis) window.speechSynthesis.cancel();
+    const seq = ++translateSeq;
 
     // 检查历史收藏状态
     chrome.storage.local.get({ vocabularyHistory: [] }, (res) => {
+      if (seq !== translateSeq) return;
       const list = res.vocabularyHistory || [];
-      const existing = list.find(item => item.word.toLowerCase() === text.toLowerCase());
+      const cleanWord = (text || '').trim().toLowerCase();
+      const existing = list.find(item => (item.word || '').trim().toLowerCase() === cleanWord);
       const alreadyStarred = Boolean(existing && existing.starred);
       if (panelStarBtn) {
         panelStarBtn.classList.toggle('starred', alreadyStarred);
@@ -1110,14 +1136,17 @@ import {
     panelResultText.textContent = '';
 
     let streamedText = '';
+    let isFinished = false;
 
     getSettings((settings) => {
+      if (seq !== translateSeq) return;
       const activePersona = settings.translationPersona || DEFAULT_PERSONA;
       const enableBilingual = settings.enableBilingualNotation !== false;
 
       try {
-        currentStreamPort = chrome.runtime.connect({ name: 'translate-stream' });
-        currentStreamPort.postMessage({
+        const port = chrome.runtime.connect({ name: 'translate-stream' });
+        currentStreamPort = port;
+        port.postMessage({
           text: text,
           context: currentSelectionContext,
           engine: engine,
@@ -1128,7 +1157,8 @@ import {
           isSelection: true
         });
 
-        currentStreamPort.onMessage.addListener((msg) => {
+        port.onMessage.addListener((msg) => {
+          if (seq !== translateSeq) return;
           if (msg.type === 'start') {
             panelLoader.classList.add('hidden');
             panelResultText.classList.remove('hidden');
@@ -1139,29 +1169,41 @@ import {
             streamedText += msg.delta;
             panelResultText.textContent = streamedText;
           } else if (msg.type === 'done') {
+            isFinished = true;
             panelLoader.classList.add('hidden');
             panelResultText.classList.remove('hidden');
             const finalText = msg.fullText || streamedText;
             panelResultText.textContent = finalText;
             saveVocabularyRecord(text, finalText, engine, null);
-            if (currentStreamPort) {
-              try { currentStreamPort.disconnect(); } catch (e) {}
+            if (currentStreamPort === port) {
+              try { port.disconnect(); } catch (e) {}
               currentStreamPort = null;
             }
           } else if (msg.type === 'error') {
+            isFinished = true;
             panelLoader.classList.add('hidden');
             panelResultText.classList.remove('hidden');
             panelResultText.textContent = `出错: ${msg.error}`;
             panelResultText.classList.add('error');
-            if (currentStreamPort) {
-              try { currentStreamPort.disconnect(); } catch (e) {}
+            if (currentStreamPort === port) {
+              try { port.disconnect(); } catch (e) {}
               currentStreamPort = null;
             }
           }
         });
 
-        currentStreamPort.onDisconnect.addListener(() => {
-          currentStreamPort = null;
+        port.onDisconnect.addListener(() => {
+          if (currentStreamPort === port) {
+            currentStreamPort = null;
+          }
+          if (seq === translateSeq && !isFinished) {
+            panelLoader.classList.add('hidden');
+            panelResultText.classList.remove('hidden');
+            if (!streamedText) {
+              panelResultText.textContent = '出错: 连接已断开，请重试';
+              panelResultText.classList.add('error');
+            }
+          }
         });
       } catch (err) {
         // 兼容环境异常降级回退
@@ -1176,6 +1218,7 @@ import {
           enableBilingualNotation: enableBilingual,
           isSelection: true
         }, (response) => {
+          if (seq !== translateSeq) return;
           panelLoader.classList.add('hidden');
           panelResultText.classList.remove('hidden');
 
@@ -1262,17 +1305,31 @@ import {
     speakText(panelResultText.textContent, chosenTarget);
   });
 
-  // 复制译文
+  // 复制译文 (附带非 HTTPS 环境兜底)
   copyResBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     const text = panelResultText.textContent;
-    if (text && !panelResultText.classList.contains('error')) {
-      navigator.clipboard.writeText(text).then(() => {
-        copyResBtn.style.color = '#34c759';
-        setTimeout(() => {
-          copyResBtn.style.color = '';
-        }, 1500);
-      });
+    if (!text || panelResultText.classList.contains('error')) return;
+    const onCopied = () => {
+      copyResBtn.style.color = '#34c759';
+      setTimeout(() => {
+        copyResBtn.style.color = '';
+      }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(onCopied).catch(() => {});
+    } else {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        onCopied();
+      } catch (err) {}
     }
   });
 
@@ -1402,7 +1459,17 @@ import {
   pdfOptDownload.addEventListener('click', () => {
     const a = document.createElement('a');
     a.href = activePdfLink;
-    a.download = activePdfLink.substring(activePdfLink.lastIndexOf('/') + 1);
+    const cleanUrl = (activePdfLink || '').split('?')[0].split('#')[0];
+    const rawName = cleanUrl.substring(cleanUrl.lastIndexOf('/') + 1);
+    let safeName = 'document.pdf';
+    if (rawName) {
+      try {
+        safeName = decodeURIComponent(rawName);
+      } catch (err) {
+        safeName = rawName;
+      }
+    }
+    a.download = safeName;
     a.click();
     pdfModal.classList.add('hidden');
   });

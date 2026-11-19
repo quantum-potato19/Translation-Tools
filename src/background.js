@@ -42,7 +42,8 @@ if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
 // --- AI Token 用量统计与防滥用监控模块 (极致轻量，零外部依赖，防超额熔断) ---
 const burstCallRecords = []; // 60s 内调用滑动窗口: [{ timestamp, tokens }]
 let lastBurstAlertTime = 0;
-let lastDailyWarnAlertDate = '';
+let lastHardLimitAlertTime = 0;
+let tokenStatsWriteQueue = Promise.resolve();
 
 function getTodayDateStr() {
   const d = new Date();
@@ -63,12 +64,21 @@ async function getTokenStatsData() {
           todayTokens: 0,
           todayCalls: 0,
           totalTokens: 0,
+          lastWarnAlertDate: '',
           dailyTokenWarnLimit: TOKEN_LIMIT_DEFAULTS.dailyTokenWarnLimit,
           dailyTokenHardLimit: TOKEN_LIMIT_DEFAULTS.dailyTokenHardLimit,
           history: {},
           byEngine: {}
         };
       }
+      data.dailyTokenWarnLimit = data.dailyTokenWarnLimit !== undefined
+        ? Number(data.dailyTokenWarnLimit)
+        : TOKEN_LIMIT_DEFAULTS.dailyTokenWarnLimit;
+      data.dailyTokenHardLimit = data.dailyTokenHardLimit !== undefined
+        ? Number(data.dailyTokenHardLimit)
+        : TOKEN_LIMIT_DEFAULTS.dailyTokenHardLimit;
+      if (typeof data.lastWarnAlertDate !== 'string') data.lastWarnAlertDate = '';
+
       // 跨天自动归档与重置
       if (data.todayDate !== today) {
         if (data.todayTokens > 0) {
@@ -86,18 +96,37 @@ async function getTokenStatsData() {
         data.todayDate = today;
         data.todayTokens = 0;
         data.todayCalls = 0;
+        data.lastWarnAlertDate = '';
       }
       resolve(data);
     });
   });
 }
 
+// 串行化 Token 统计读写，避免并发批量请求互相覆盖计数
+function enqueueTokenStatsWrite(mutator) {
+  const next = tokenStatsWriteQueue.then(async () => {
+    const stats = await getTokenStatsData();
+    await mutator(stats);
+    await new Promise((resolve) => {
+      chrome.storage.local.set({ [TOKEN_STATS_STORAGE_KEY]: stats }, resolve);
+    });
+    return stats;
+  });
+  tokenStatsWriteQueue = next.catch(() => {});
+  return next;
+}
+
 // 检查是否超出每日硬限制熔断 (在发起网络请求前调用)
 async function checkTokenLimits(estimatedTokens = 0) {
   const stats = await getTokenStatsData();
-  const hardLimit = Number(stats.dailyTokenHardLimit) || 0;
+  const hardLimit = stats.dailyTokenHardLimit !== undefined
+    ? Number(stats.dailyTokenHardLimit)
+    : TOKEN_LIMIT_DEFAULTS.dailyTokenHardLimit;
   if (hardLimit > 0 && (stats.todayTokens + estimatedTokens) > hardLimit) {
-    if (chrome.notifications) {
+    const now = Date.now();
+    if (chrome.notifications && (now - lastHardLimitAlertTime > 60000)) {
+      lastHardLimitAlertTime = now;
       chrome.notifications.create({
         type: 'basic',
         iconUrl: 'icons/icon-48.png',
@@ -105,7 +134,9 @@ async function checkTokenLimits(estimatedTokens = 0) {
         message: `今日 AI Token 消耗已达安全硬限制 (${stats.todayTokens.toLocaleString()} / ${hardLimit.toLocaleString()})，已自动拦截请求以防超额扣费。`
       });
     }
-    throw new Error(`今日 AI Token 消耗 (${stats.todayTokens.toLocaleString()}) 已达到安全硬限制 (${hardLimit.toLocaleString()})，已自动熔断保护。如需继续请在设置中调高限额或重置统计。`);
+    const err = new Error(`今日 AI Token 消耗 (${stats.todayTokens.toLocaleString()}) 已达到安全硬限制 (${hardLimit.toLocaleString()})，已自动熔断保护。如需继续请在设置中调高限额或重置统计。`);
+    err.code = 'TOKEN_HARD_LIMIT';
+    throw err;
   }
 }
 
@@ -136,32 +167,30 @@ async function recordTokenUsage({ engine = 'ai', tokens = 0 }) {
     }
   }
 
-  // 2. 更新本地持久化统计
-  const stats = await getTokenStatsData();
-  const today = stats.todayDate;
-  stats.todayTokens += safeTokens;
-  stats.todayCalls += 1;
-  stats.totalTokens = (stats.totalTokens || 0) + safeTokens;
+  // 2. 串行更新本地持久化统计与持久化每日预警状态
+  await enqueueTokenStatsWrite((stats) => {
+    const today = stats.todayDate;
+    stats.todayTokens += safeTokens;
+    stats.todayCalls += 1;
+    stats.totalTokens = (stats.totalTokens || 0) + safeTokens;
 
-  if (!stats.byEngine) stats.byEngine = {};
-  stats.byEngine[engine] = (stats.byEngine[engine] || 0) + safeTokens;
+    if (!stats.byEngine) stats.byEngine = {};
+    stats.byEngine[engine] = (stats.byEngine[engine] || 0) + safeTokens;
 
-  // 3. 每日用量预警检测
-  const warnLimit = Number(stats.dailyTokenWarnLimit) || 0;
-  if (warnLimit > 0 && stats.todayTokens >= warnLimit && lastDailyWarnAlertDate !== today) {
-    lastDailyWarnAlertDate = today;
-    if (chrome.notifications) {
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: 'icons/icon-48.png',
-        title: 'Translate FY - 今日 Token 消耗预警',
-        message: `今日 AI Token 消耗已达到 ${stats.todayTokens.toLocaleString()}，已超过预警阈值 (${warnLimit.toLocaleString()})。`
-      });
+    const warnLimit = stats.dailyTokenWarnLimit !== undefined
+      ? Number(stats.dailyTokenWarnLimit)
+      : TOKEN_LIMIT_DEFAULTS.dailyTokenWarnLimit;
+    if (warnLimit > 0 && stats.todayTokens >= warnLimit && stats.lastWarnAlertDate !== today) {
+      stats.lastWarnAlertDate = today;
+      if (chrome.notifications) {
+        chrome.notifications.create({
+          type: 'basic',
+          iconUrl: 'icons/icon-48.png',
+          title: 'Translate FY - 今日 Token 消耗预警',
+          message: `今日 AI Token 消耗已达到 ${stats.todayTokens.toLocaleString()}，已超过预警阈值 (${warnLimit.toLocaleString()})。`
+        });
+      }
     }
-  }
-
-  await new Promise((resolve) => {
-    chrome.storage.local.set({ [TOKEN_STATS_STORAGE_KEY]: stats }, resolve);
   });
 }
 
@@ -265,25 +294,29 @@ if (chrome.webNavigation && chrome.webNavigation.onBeforeNavigate) {
   });
 }
 
-// 初始化时创建上下文菜单及同步 DNR 规则
+// 初始化时创建上下文菜单及同步 DNR 规则 (尊重 pdfContextMenu 开关)
 function registerContextMenus() {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: 'translateSelection',
-      title: '翻译选中内容',
-      contexts: ['selection']
-    });
+  chrome.storage.local.get({ pdfContextMenu: true }, (settings) => {
+    chrome.contextMenus.removeAll(() => {
+      chrome.contextMenus.create({
+        id: 'translateSelection',
+        title: '翻译选中内容',
+        contexts: ['selection']
+      });
 
-    chrome.contextMenus.create({
-      id: 'openPdfInExtension',
-      title: '在 Translate FY 中打开此链接 PDF',
-      contexts: ['link']
-    });
+      if (settings.pdfContextMenu !== false) {
+        chrome.contextMenus.create({
+          id: 'openPdfInExtension',
+          title: '在 Translate FY 中打开此链接 PDF',
+          contexts: ['link']
+        });
 
-    chrome.contextMenus.create({
-      id: 'openCurrentPageInPdf',
-      title: '在 Translate FY 阅读器中打开当前页面/PDF',
-      contexts: ['page', 'frame']
+        chrome.contextMenus.create({
+          id: 'openCurrentPageInPdf',
+          title: '在 Translate FY 阅读器中打开当前页面/PDF',
+          contexts: ['page', 'frame']
+        });
+      }
     });
   });
 }
@@ -323,10 +356,13 @@ chrome.runtime.onStartup.addListener(() => {
   syncPdfDnrRules();
 });
 
-// 监听配置变更，动态启闭 PDF 拦截规则
+// 监听配置变更，动态启闭 PDF 拦截规则与右键菜单
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'local' && changes.pdfAction) {
     syncPdfDnrRules();
+  }
+  if (areaName === 'local' && changes.pdfContextMenu) {
+    registerContextMenus();
   }
 });
 
@@ -712,8 +748,11 @@ function unmaskNumericEntities(translatedText, tokenMap) {
   if (!translatedText || !tokenMap || tokenMap.size === 0) return translatedText;
   let result = translatedText;
   tokenMap.forEach((originalValue, token) => {
-    const fuzzyRegex = new RegExp(token.replace(/_/g, '[_\\s]?'), 'gi');
-    result = result.replace(fuzzyRegex, originalValue);
+    const m = token.match(/^__([A-Z_]+?)_(\d+)__$/);
+    const fuzzyRegex = m
+      ? new RegExp(`_{1,2}\\s*${m[1]}[_\\s]*${m[2]}(?!\\d)\\s*_{0,2}`, 'gi')
+      : new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    result = result.replace(fuzzyRegex, () => originalValue);
   });
   return result;
 }
@@ -1524,21 +1563,23 @@ async function translateBatchDeepL(items, targetLang, apiKey, customEndpoint) {
 }
 
 async function translateBatchGeneric(items, engine, targetLang, settings) {
-  const results = [];
+  const results = new Array(items.length);
   const CONCURRENCY = 5;
   let idx = 0;
   async function worker() {
     while (idx < items.length) {
-      const current = items[idx++];
+      const currentIdx = idx++;
+      const current = items[currentIdx];
       if (!current) break;
       try {
         let t = '';
         if (engine === 'bing') t = await translateBing(current.text, targetLang);
         else if (engine === 'youdao') t = await translateYoudao(current.text, targetLang, settings.youdaoAppKey, settings.youdaoAppSecret);
         else t = await translateGoogle(current.text, targetLang);
-        results.push({ id: current.id, text: t });
+        results[currentIdx] = { id: current.id, text: t };
       } catch (e) {
-        results.push({ id: current.id, text: `[翻译失败: ${e.message}]` });
+        const safeMsg = redactSensitiveText(e.message, [settings.youdaoAppKey, settings.youdaoAppSecret]);
+        results[currentIdx] = { id: current.id, text: `[翻译失败: ${safeMsg}]` };
       }
     }
   }
@@ -1886,7 +1927,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (result.deepseekApiKey && result.deepseekApiKey.trim() !== '') {
         available.push({ id: 'deepseek', name: 'DeepSeek (大模型)' });
       }
-      if (result.deeplApiKey && result.deeplApiKey.trim() !== '') {
+      if ((result.deeplApiKey && result.deeplApiKey.trim() !== '') || (result.deeplEndpoint && result.deeplEndpoint.trim() !== '')) {
         available.push({ id: 'deepl', name: 'DeepL' });
       }
       if (result.youdaoAppKey && result.youdaoAppKey.trim() !== '' && result.youdaoAppSecret && result.youdaoAppSecret.trim() !== '') {
@@ -1948,7 +1989,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // 重置 Token 监控数据 (scope: 'today' | 'all')
   if (request.action === 'resetTokenStats') {
     const scope = request.scope || 'today';
-    getTokenStatsData().then(stats => {
+    enqueueTokenStatsWrite((stats) => {
       if (scope === 'all') {
         stats.todayTokens = 0;
         stats.todayCalls = 0;
@@ -1959,9 +2000,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         stats.todayTokens = 0;
         stats.todayCalls = 0;
       }
-      chrome.storage.local.set({ [TOKEN_STATS_STORAGE_KEY]: stats }, () => {
-        sendResponse({ success: true, stats });
-      });
+      stats.lastWarnAlertDate = '';
+      lastHardLimitAlertTime = 0;
+    }).then(stats => {
+      sendResponse({ success: true, stats });
     }).catch(err => {
       sendResponse({ success: false, error: err.message });
     });
@@ -1971,12 +2013,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // 更新预警与硬熔断限制配置
   if (request.action === 'updateTokenLimits') {
     const { dailyTokenWarnLimit, dailyTokenHardLimit } = request;
-    getTokenStatsData().then(stats => {
-      if (typeof dailyTokenWarnLimit === 'number') stats.dailyTokenWarnLimit = dailyTokenWarnLimit;
-      if (typeof dailyTokenHardLimit === 'number') stats.dailyTokenHardLimit = dailyTokenHardLimit;
-      chrome.storage.local.set({ [TOKEN_STATS_STORAGE_KEY]: stats }, () => {
-        sendResponse({ success: true, stats });
-      });
+    enqueueTokenStatsWrite((stats) => {
+      if (typeof dailyTokenWarnLimit === 'number' && Number.isFinite(dailyTokenWarnLimit) && dailyTokenWarnLimit >= 0) {
+        stats.dailyTokenWarnLimit = dailyTokenWarnLimit;
+      }
+      if (typeof dailyTokenHardLimit === 'number' && Number.isFinite(dailyTokenHardLimit) && dailyTokenHardLimit >= 0) {
+        stats.dailyTokenHardLimit = dailyTokenHardLimit;
+      }
+    }).then(stats => {
+      sendResponse({ success: true, stats });
     }).catch(err => {
       sendResponse({ success: false, error: err.message });
     });
@@ -2139,6 +2184,24 @@ async function streamOpenAIEndpoint({ apiKey, endpoint, modelName, messages, tem
   let fullOutput = '';
   let streamUsageTokens = null;
 
+  const processOpenAISseLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith(':') || trimmed === 'data: [DONE]') return;
+    if (trimmed.startsWith('data:')) {
+      try {
+        const json = JSON.parse(trimmed.slice(5).trim());
+        if (json.usage && typeof json.usage.total_tokens === 'number') {
+          streamUsageTokens = json.usage.total_tokens;
+        }
+        const delta = json.choices?.[0]?.delta?.content || '';
+        if (delta) {
+          fullOutput += delta;
+          onChunk(delta);
+        }
+      } catch (e) {}
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -2146,23 +2209,11 @@ async function streamOpenAIEndpoint({ apiKey, endpoint, modelName, messages, tem
     const lines = buffer.split('\n');
     buffer = lines.pop(); // 保留不完整尾行
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith(':')) continue;
-      if (trimmed === 'data: [DONE]') continue;
-      if (trimmed.startsWith('data:')) {
-        try {
-          const json = JSON.parse(trimmed.slice(5).trim());
-          if (json.usage && typeof json.usage.total_tokens === 'number') {
-            streamUsageTokens = json.usage.total_tokens;
-          }
-          const delta = json.choices?.[0]?.delta?.content || '';
-          if (delta) {
-            fullOutput += delta;
-            onChunk(delta);
-          }
-        } catch (e) {}
-      }
+      processOpenAISseLine(line);
     }
+  }
+  if (buffer && buffer.trim()) {
+    processOpenAISseLine(buffer);
   }
 
   const actualTokens = streamUsageTokens || (estPromptTokens + estimateTokenCount(fullOutput));
@@ -2204,6 +2255,23 @@ async function streamGeminiEndpoint({ apiKey, modelName, prompt, signal, onChunk
   let lineBuffer = '';
   let streamUsageTokens = null;
 
+  const processGeminiSseLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith('data: ')) return;
+    const jsonStr = trimmed.slice(6).trim();
+    try {
+      const parsed = JSON.parse(jsonStr);
+      if (parsed.usageMetadata && typeof parsed.usageMetadata.totalTokenCount === 'number') {
+        streamUsageTokens = parsed.usageMetadata.totalTokenCount;
+      }
+      const delta = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (delta) {
+        fullOutput += delta;
+        if (onChunk) onChunk(delta);
+      }
+    } catch (e) {}
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -2213,21 +2281,11 @@ async function streamGeminiEndpoint({ apiKey, modelName, prompt, signal, onChunk
     lineBuffer = lines.pop();
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
-      const jsonStr = trimmed.slice(6).trim();
-      try {
-        const parsed = JSON.parse(jsonStr);
-        if (parsed.usageMetadata && typeof parsed.usageMetadata.totalTokenCount === 'number') {
-          streamUsageTokens = parsed.usageMetadata.totalTokenCount;
-        }
-        const delta = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        if (delta) {
-          fullOutput += delta;
-          if (onChunk) onChunk(delta);
-        }
-      } catch (e) {}
+      processGeminiSseLine(line);
     }
+  }
+  if (lineBuffer && lineBuffer.trim()) {
+    processGeminiSseLine(lineBuffer);
   }
 
   const actualTokens = streamUsageTokens || (estPromptTokens + estimateTokenCount(fullOutput));
@@ -2276,8 +2334,16 @@ chrome.runtime.onConnect.addListener((port) => {
   // 划词浮窗长连接逐字打字机
   if (port.name === 'translate-stream') {
     let abortController = new AbortController();
+    let isDisconnected = false;
+    const safePost = (msg) => {
+      if (isDisconnected) return;
+      try {
+        port.postMessage(msg);
+      } catch (e) {}
+    };
 
     port.onDisconnect.addListener(() => {
+      isDisconnected = true;
       abortController.abort();
     });
 
@@ -2286,7 +2352,7 @@ chrome.runtime.onConnect.addListener((port) => {
       const activePersona = persona || DEFAULT_PERSONA;
       const isBilingual = enableBilingualNotation !== false;
 
-      port.postMessage({ type: 'start' });
+      safePost({ type: 'start' });
 
       // 单学术术语直接查词快速通道
       if (isChineseLang(targetLang) && text && text.trim().length <= 50 && !text.includes('\n')) {
@@ -2302,7 +2368,7 @@ chrome.runtime.onConnect.addListener((port) => {
             displayTrans = `${match.translation} (${match.term}${abbrPart ? ', ' + abbrPart : ''})`;
           }
           const finalResult = healAcademicSymbols(displayTrans, activePersona);
-          port.postMessage({
+          safePost({
             type: 'done',
             fullText: finalResult,
             note: match.note || ''
@@ -2312,6 +2378,7 @@ chrome.runtime.onConnect.addListener((port) => {
       }
 
       chrome.storage.local.get(ENGINE_STORAGE_DEFAULTS, async (settings) => {
+        if (isDisconnected) return;
         try {
           let fullResult = '';
           const isAIStream = isAIEngineId(engine);
@@ -2335,7 +2402,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
             // 占位符防抖与安全还原器：确保 chunk 中绝不暴露 __NUM_0__ 乱码
             const unmasker = createStreamTokenUnmasker(tokenMap, (safeDelta) => {
-              port.postMessage({ type: 'chunk', delta: safeDelta });
+              safePost({ type: 'chunk', delta: safeDelta });
             });
 
             if (engine === 'gemini') {
@@ -2351,6 +2418,14 @@ chrome.runtime.onConnect.addListener((port) => {
                   onChunk: (delta) => unmasker.feed(delta)
                 });
               } catch (geminiStreamErr) {
+                // 若被主动中止或命中每日 Token 硬限制，严禁降级重试再次发起请求
+                if (
+                  geminiStreamErr?.name === 'AbortError' ||
+                  geminiStreamErr?.code === 'TOKEN_HARD_LIMIT' ||
+                  isDisconnected
+                ) {
+                  throw geminiStreamErr;
+                }
                 // 如果 SSE 流式连接受阻，降级调用非流式 translateGemini
                 rawOutput = await translateGemini(text, targetLang, settings.geminiApiKey, geminiModel, context, activePersona, settings.customPersonaPrompts, isBilingual, sourceLang);
                 unmasker.feed(rawOutput);
@@ -2414,10 +2489,10 @@ chrome.runtime.onConnect.addListener((port) => {
             }
           }
 
-          port.postMessage({ type: 'done', fullText: healAcademicSymbols(fullResult, activePersona) });
+          safePost({ type: 'done', fullText: healAcademicSymbols(fullResult, activePersona) });
         } catch (err) {
           if (err.name !== 'AbortError') {
-            port.postMessage({ type: 'error', error: redactSensitiveText(err.message) });
+            safePost({ type: 'error', error: redactSensitiveText(err.message) });
           }
         }
       });
@@ -2427,17 +2502,26 @@ chrome.runtime.onConnect.addListener((port) => {
   // 论文一键骨干学术总结长连接通道
   if (port.name === 'paper-summary-stream') {
     let abortController = new AbortController();
+    let isDisconnected = false;
+    const safePost = (msg) => {
+      if (isDisconnected) return;
+      try {
+        port.postMessage(msg);
+      } catch (e) {}
+    };
 
     port.onDisconnect.addListener(() => {
+      isDisconnected = true;
       abortController.abort();
     });
 
     port.onMessage.addListener((request) => {
       const { backbone, engine, targetLang, model } = request;
 
-      port.postMessage({ type: 'start' });
+      safePost({ type: 'start' });
 
       chrome.storage.local.get(ENGINE_STORAGE_DEFAULTS, async (settings) => {
+        if (isDisconnected) return;
         try {
           const summaryPrompt = `你是一名国际顶级学术期刊 (如 Nature, Science, Cell, IEEE, ACM) 的资深学术主编兼同行评审专家。
 请根据以下从论文中精准抽取的骨干信息（包含标题/摘要、主要章节大纲、以及结论部分），为学术研究者撰写一份高信息密度、逻辑结构严密的【论文核心框架与学术大纲总结】。
@@ -2484,10 +2568,10 @@ ${backbone.tailSample || ''}
               prompt: summaryPrompt,
               signal: abortController.signal,
               onChunk: (delta) => {
-                port.postMessage({ type: 'chunk', delta });
+                safePost({ type: 'chunk', delta });
               }
             });
-            port.postMessage({ type: 'done', fullText: fullResult });
+            safePost({ type: 'done', fullText: fullResult });
             return;
           }
 
@@ -2504,11 +2588,12 @@ ${backbone.tailSample || ''}
             isCustomEngine = true;
             const customId = chosenEngine.substring(7);
             const customModel = (settings.customModels || []).find(m => m.id === customId);
-            if (customModel) {
-              apiKey = customModel.apiKey;
-              endpoint = customModel.endpoint;
-              modelName = customModel.modelName;
+            if (!customModel) {
+              throw new Error('未找到该自定义模型配置，请在设置中重新选择');
             }
+            apiKey = customModel.apiKey;
+            endpoint = customModel.endpoint;
+            modelName = customModel.modelName;
           } else if (settings.glmApiKey) {
             apiKey = settings.glmApiKey;
             endpoint = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
@@ -2532,15 +2617,15 @@ ${backbone.tailSample || ''}
             temperature: 0.3,
             signal: abortController.signal,
             onChunk: (delta) => {
-              port.postMessage({ type: 'chunk', delta });
+              safePost({ type: 'chunk', delta });
             },
             engine: chosenEngine || 'ai'
           });
 
-          port.postMessage({ type: 'done', fullText: fullResult });
+          safePost({ type: 'done', fullText: fullResult });
         } catch (err) {
           if (err.name !== 'AbortError') {
-            port.postMessage({ type: 'error', error: redactSensitiveText(err.message) });
+            safePost({ type: 'error', error: redactSensitiveText(err.message) });
           }
         }
       });

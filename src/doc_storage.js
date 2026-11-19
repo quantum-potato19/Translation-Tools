@@ -412,9 +412,12 @@ export const DocStorage = {
           const cursor = e.target.result;
           if (cursor) {
             const k = String(cursor.key);
-            if (k.startsWith(`${docId}_p`)) {
-              const p = parseInt(k.split('_p')[1], 10);
-              if (!isNaN(p)) res.drawings.set(p, cursor.value);
+            const prefix = `${docId}_p`;
+            if (k.startsWith(prefix)) {
+              const pagePart = k.slice(prefix.length);
+              if (/^\d+$/.test(pagePart)) {
+                res.drawings.set(parseInt(pagePart, 10), cursor.value);
+              }
             }
             cursor.continue();
           }
@@ -425,9 +428,12 @@ export const DocStorage = {
           const cursor = e.target.result;
           if (cursor) {
             const k = String(cursor.key);
-            if (k.startsWith(`${docId}_p`)) {
-              const p = parseInt(k.split('_p')[1], 10);
-              if (!isNaN(p)) res.translations.set(p, cursor.value);
+            const prefix = `${docId}_p`;
+            if (k.startsWith(prefix)) {
+              const pagePart = k.slice(prefix.length);
+              if (/^\d+$/.test(pagePart)) {
+                res.translations.set(parseInt(pagePart, 10), cursor.value);
+              }
             }
             cursor.continue();
           }
@@ -524,7 +530,14 @@ export const DocStorage = {
             // 从 docId 提取可读备用标题
             let fallbackTitle = '已缓存文献';
             const m = docId.match(/^pdf_(.+?)_p\d+/);
-            if (m && m[1]) fallbackTitle = decodeURIComponent(m[1].replace(/_/g, ' '));
+            if (m && m[1]) {
+              const rawName = m[1].replace(/_/g, ' ');
+              try {
+                fallbackTitle = decodeURIComponent(rawName);
+              } catch (decodeErr) {
+                fallbackTitle = rawName;
+              }
+            }
 
             docsList.push({
               id: docId,

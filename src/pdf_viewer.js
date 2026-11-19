@@ -1142,7 +1142,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 从 storage 读取并恢复用户偏好的浮窗宽度
   chrome.storage.local.get({ pdfPanelWidth: 360 }, (res) => {
-    if (res.pdfPanelWidth && res.pdfPanelWidth >= 280) {
+    if (res.pdfPanelWidth && res.pdfPanelWidth >= 320) {
       translatePanel.style.width = `${res.pdfPanelWidth}px`;
     }
   });
@@ -1164,11 +1164,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const deltaX = moveEvent.clientX - startX;
 
       if (direction === 'right') {
-        const maxW = Math.max(280, window.innerWidth - startLeft - 20);
-        const newWidth = Math.max(280, Math.min(maxW, startWidth + deltaX));
+        const maxW = Math.max(320, window.innerWidth - startLeft - 20);
+        const newWidth = Math.max(320, Math.min(maxW, startWidth + deltaX));
         translatePanel.style.width = `${newWidth}px`;
       } else if (direction === 'left') {
-        const newWidth = Math.max(280, startWidth - deltaX);
+        const newWidth = Math.max(320, startWidth - deltaX);
         const newLeft = startLeft + (startWidth - newWidth);
         if (newLeft >= 10) {
           translatePanel.style.width = `${newWidth}px`;
@@ -1196,6 +1196,8 @@ document.addEventListener('DOMContentLoaded', () => {
   if (handleLeft) handleLeft.addEventListener('mousedown', (e) => initResize(e, 'left'));
   if (handleRight) handleRight.addEventListener('mousedown', (e) => initResize(e, 'right'));
 
+  let hasInitializedEngines = false;
+
   // 动态加载可用引擎列表
   function loadAvailableEngines(callback) {
     chrome.storage.local.get({
@@ -1207,62 +1209,60 @@ document.addEventListener('DOMContentLoaded', () => {
       deepseekApiKey: '',
       deepseekModels: null,
       deepseekActiveModel: 'deepseek-chat',
-      ollamaEndpoint: '',
-      ollamaModels: null,
-      ollamaActiveModel: 'qwen2.5:7b',
       deeplApiKey: '',
       deeplEndpoint: '',
       youdaoAppKey: '',
       youdaoAppSecret: '',
-      pdfTranslateEngine: 'google',
+      defaultEngine: 'google',
+      pdfTranslateEngine: '',
       customModels: []
     }, (result) => {
       // 动态载入用户在设置中启用的模型列表
       if (Array.isArray(result.glmModels) && result.glmModels.length > 0) AI_MODELS.glm = result.glmModels;
       if (Array.isArray(result.geminiModels) && result.geminiModels.length > 0) AI_MODELS.gemini = result.geminiModels;
       if (Array.isArray(result.deepseekModels) && result.deepseekModels.length > 0) AI_MODELS.deepseek = result.deepseekModels;
-      if (Array.isArray(result.ollamaModels) && result.ollamaModels.length > 0) AI_MODELS.ollama = result.ollamaModels;
 
-      const currentPanelVal = panelEngineSelect.value;
-      const currentToolbarVal = pdfTranslateEngine ? (pdfTranslateEngine.value || result.pdfTranslateEngine || 'google') : 'google';
+      const preferredInitEngine = result.pdfTranslateEngine || result.defaultEngine || 'google';
+      const currentPanelVal = !hasInitializedEngines ? preferredInitEngine : (panelEngineSelect.value || preferredInitEngine);
+      const currentToolbarVal = pdfTranslateEngine
+        ? (!hasInitializedEngines ? preferredInitEngine : (pdfTranslateEngine.value || preferredInitEngine))
+        : 'google';
+      hasInitializedEngines = true;
 
       panelEngineSelect.innerHTML = '';
       if (pdfTranslateEngine) pdfTranslateEngine.innerHTML = '';
 
       const available = [
-        { value: 'google', label: 'Google 翻译 (免Key)' },
-        { value: 'bing', label: 'Bing 翻译 (免Key·微软)' }
+        { value: 'google', label: 'Google 翻译 (免Key)', shortLabel: 'Google' },
+        { value: 'bing', label: 'Bing 翻译 (免Key·微软)', shortLabel: 'Bing' }
       ];
 
       if ((result.deeplApiKey && result.deeplApiKey.trim()) || (result.deeplEndpoint && result.deeplEndpoint.trim())) {
-        available.push({ value: 'deepl', label: 'DeepL 翻译 (精准自然)' });
+        available.push({ value: 'deepl', label: 'DeepL 翻译 (精准自然)', shortLabel: 'DeepL' });
       }
       if (result.glmApiKey && result.glmApiKey.trim()) {
-        available.push({ value: 'glm', label: '智谱 GLM (免费Flash)' });
+        available.push({ value: 'glm', label: '智谱 GLM (免费Flash)', shortLabel: '智谱 GLM' });
       }
       if (result.geminiApiKey && result.geminiApiKey.trim()) {
-        available.push({ value: 'gemini', label: 'Google Gemini (终身免费)' });
+        available.push({ value: 'gemini', label: 'Google Gemini (终身免费)', shortLabel: 'Gemini' });
       }
       if (result.deepseekApiKey && result.deepseekApiKey.trim()) {
-        available.push({ value: 'deepseek', label: 'DeepSeek 翻译 (深度推理)' });
-      }
-      if (result.ollamaEndpoint && result.ollamaEndpoint.trim()) {
-        available.push({ value: 'ollama', label: 'Ollama (本地大模型)' });
+        available.push({ value: 'deepseek', label: 'DeepSeek 翻译 (深度推理)', shortLabel: 'DeepSeek' });
       }
       if (result.youdaoAppKey && result.youdaoAppSecret && result.youdaoAppKey.trim() && result.youdaoAppSecret.trim()) {
-        available.push({ value: 'youdao', label: '有道词典' });
+        available.push({ value: 'youdao', label: '有道词典', shortLabel: '有道' });
       }
 
-      result.customModels.forEach(m => {
+      (result.customModels || []).forEach(m => {
         if ((m.apiKey && m.apiKey.trim()) || (m.endpoint && m.endpoint.trim())) {
-          available.push({ value: `custom_${m.id}`, label: m.name });
+          available.push({ value: `custom_${m.id}`, label: m.name, shortLabel: m.name });
         }
       });
 
       available.forEach(item => {
         const optPanel = document.createElement('option');
         optPanel.value = item.value;
-        optPanel.textContent = item.label;
+        optPanel.textContent = item.shortLabel;
         panelEngineSelect.appendChild(optPanel);
 
         if (pdfTranslateEngine) {
@@ -1341,9 +1341,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loadAvailableEngines();
 
-  // 监听 storage 变更，及时更新可用引擎
-  chrome.storage.onChanged.addListener(() => {
-    loadAvailableEngines();
+  // 监听 storage 变更，仅当引擎或模型配置变更时刷新引擎列表（避免 tokenUsageStats 等高频写入触发冗余重绘）
+  const ENGINE_WATCH_KEYS = new Set([
+    'glmApiKey', 'glmModels', 'geminiApiKey', 'geminiModels',
+    'deepseekApiKey', 'deepseekModels', 'deeplApiKey', 'deeplEndpoint',
+    'youdaoAppKey', 'youdaoAppSecret', 'defaultEngine', 'customModels'
+  ]);
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area && area !== 'local') return;
+    if (Object.keys(changes).some(k => ENGINE_WATCH_KEYS.has(k))) {
+      loadAvailableEngines();
+    }
   });
 
   function getSettings(callback) {
@@ -1625,16 +1633,19 @@ document.addEventListener('DOMContentLoaded', () => {
       window.speechSynthesis.cancel();
     }
 
-    const panelWidth = translatePanel.offsetWidth || 360;
-    const panelHeight = translatePanel.offsetHeight || 220;
-    let safeX = Math.max(12, Math.min(x, window.innerWidth - panelWidth - 16));
-    let safeY = Math.max(12, Math.min(y + 8, window.innerHeight - panelHeight - 16));
-    if (y + panelHeight + 20 > window.innerHeight && y - panelHeight - 12 >= 10) {
-      safeY = y - panelHeight - 12;
-    }
+    // 若浮窗已处于固定展开状态，保持位置不随新一轮划词跳动
+    if (!isPinned || !translatePanel.classList.contains('show')) {
+      const panelWidth = translatePanel.offsetWidth || parseInt(translatePanel.style.width, 10) || 360;
+      const panelHeight = translatePanel.offsetHeight || 220;
+      let safeX = Math.max(12, Math.min(x, window.innerWidth - panelWidth - 16));
+      let safeY = Math.max(12, Math.min(y + 8, window.innerHeight - panelHeight - 16));
+      if (y + panelHeight + 20 > window.innerHeight && y - panelHeight - 12 >= 10) {
+        safeY = y - panelHeight - 12;
+      }
 
-    translatePanel.style.left = `${safeX}px`;
-    translatePanel.style.top = `${safeY}px`;
+      translatePanel.style.left = `${safeX}px`;
+      translatePanel.style.top = `${safeY}px`;
+    }
     panelSourceText.textContent = text;
     currentSelectionContext = context || '';
 
@@ -1683,12 +1694,7 @@ document.addEventListener('DOMContentLoaded', () => {
     panelModelSelect.innerHTML = '';
 
     if (AI_MODELS[engine]) {
-      let models = AI_MODELS[engine];
-      // 划词翻译下拉框中：GLM 仅显示免费模型 (flash 免费系列)
-      if (engine === 'glm') {
-        const freeModels = models.filter(m => m.toLowerCase().includes('flash'));
-        models = freeModels.length > 0 ? freeModels : ['glm-4-flash', 'glm-4.5-flash', 'glm-4.7-flash', 'glm-4-flashx'];
-      }
+      const models = AI_MODELS[engine];
 
       models.forEach(m => {
         const opt = document.createElement('option');
@@ -1964,28 +1970,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- PDF.js 核心渲染逻辑 ---
 
-  // 从 URL 获取并加载 PDF
-  const urlParams = new URLSearchParams(window.location.search);
-  const fileUrl = urlParams.get('file');
+  // 从 URL 获取并加载 PDF (兼容 DNR 未编码直跳与常规编码 query)
+  const rawSearch = window.location.search || '';
+  const urlParams = new URLSearchParams(rawSearch);
+  let fileUrl = urlParams.get('file');
+  if (rawSearch.startsWith('?file=http:') || rawSearch.startsWith('?file=https:')) {
+    fileUrl = rawSearch.slice(6);
+  }
   if (fileUrl) {
-    loadingOverlay.classList.remove('hidden');
-    loadingStatus.textContent = '正在获取网络 PDF 文件...';
-    
-    fetch(fileUrl)
-      .then(res => {
-        if (!res.ok) throw new Error(`HTTP 错误: ${res.status}`);
-        return res.arrayBuffer();
-      })
-      .then(buffer => {
-        pdfDataBuffer = new Uint8Array(buffer);
-        pdfFileName = decodeURIComponent(fileUrl.substring(fileUrl.lastIndexOf('/') + 1));
-        loadPdf(pdfDataBuffer, pdfFileName);
-      })
-      .catch(err => {
-        console.error(err);
-        loadingOverlay.classList.add('hidden');
-        alert('读取 PDF 链接失败: ' + err.message);
-      });
+    let isAllowedScheme = false;
+    try {
+      const parsedFileUrl = new URL(fileUrl, window.location.href);
+      isAllowedScheme = ['http:', 'https:', 'file:', 'blob:'].includes(parsedFileUrl.protocol);
+    } catch (e) {}
+
+    if (!isAllowedScheme) {
+      alert('不支持的 PDF 链接协议，仅允许 http/https/file/blob 地址');
+    } else {
+      loadingOverlay.classList.remove('hidden');
+      loadingStatus.textContent = '正在获取网络 PDF 文件...';
+
+      fetch(fileUrl)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP 错误: ${res.status}`);
+          return res.arrayBuffer();
+        })
+        .then(buffer => {
+          pdfDataBuffer = new Uint8Array(buffer);
+          const cleanFilePath = fileUrl.split('?')[0].split('#')[0];
+          const rawBase = cleanFilePath.substring(cleanFilePath.lastIndexOf('/') + 1);
+          try {
+            pdfFileName = rawBase ? decodeURIComponent(rawBase) : 'document.pdf';
+          } catch (e) {
+            pdfFileName = rawBase || 'document.pdf';
+          }
+          loadPdf(pdfDataBuffer, pdfFileName);
+        })
+        .catch(err => {
+          console.error(err);
+          loadingOverlay.classList.add('hidden');
+          alert('读取 PDF 链接失败: ' + err.message);
+        });
+    }
   }
 
   // 本地文件拖拽
@@ -4467,19 +4493,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const translatingPages = new Set(); // `${docId}#${page}` 在途去重，防止重复点击重复扣费与覆盖层互相覆盖
 
   async function translatePage(pageNum, isBatch = false) {
-    if (!currentPdf) return;
+    if (!currentPdf) return { ok: false, fatal: false, error: '未加载 PDF' };
     const targetPageNum = Math.max(1, Math.min(pageNum || currentPage, currentPdf.numPages));
 
     // 批量任务进行中禁止插入单页任务，否则会替换全局控制器，导致“停止”按钮无法中止批量任务
     if (!isBatch && isTranslatingDoc) {
       showToast('正在批量翻译中，请稍候或先停止当前任务');
-      return;
+      return { ok: false, fatal: false, error: '批量任务进行中' };
     }
 
     const inflightKey = `${currentDocId}#${targetPageNum}`;
     if (translatingPages.has(inflightKey)) {
       if (!isBatch) showToast(`第 ${targetPageNum} 页正在翻译中，请稍候`);
-      return;
+      return { ok: true };
     }
 
     // 单页任务始终使用全新控制器；批量任务沿用调度器控制器
@@ -4490,7 +4516,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     translatingPages.add(inflightKey);
     try {
-      await translatePageInner(targetPageNum, isBatch, isStale);
+      return await translatePageInner(targetPageNum, isBatch, isStale);
     } finally {
       translatingPages.delete(inflightKey);
     }
@@ -4507,10 +4533,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 2. 渲染右侧当前页独立靶向画板（Stage）
     const stage = await renderTransStageForPage(targetPageNum);
-    if (isStale()) return;
+    if (isStale()) return { ok: false, fatal: false, aborted: true };
     if (!stage) {
       console.error(`挂载第 ${targetPageNum} 页舞台失败`);
-      return;
+      return { ok: false, fatal: false, error: `挂载第 ${targetPageNum} 页舞台失败` };
     }
 
     const { overlayLayer, page } = stage;
@@ -4518,7 +4544,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 3. 提取并结构化页面内容块与物理边界
     const blocks = await extractPageBlocks(page, skipFormulas);
-    if (isStale()) return;
+    if (isStale()) return { ok: false, fatal: false, aborted: true };
 
     if (!blocks || blocks.length === 0) {
       if (scannedPdfAlert) {
@@ -4529,7 +4555,7 @@ document.addEventListener('DOMContentLoaded', () => {
         scannedPdfAlert.classList.remove('hidden');
       }
       transActiveBadge.textContent = '无可选文本';
-      return;
+      return { ok: true };
     } else {
       if (scannedPdfAlert) {
         scannedPdfAlert.classList.add('hidden');
@@ -4606,10 +4632,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (currentViewMode === 'flow') {
         renderBilingualReaderFlow();
       }
-      return;
+      return { ok: true };
     }
 
     transActiveBadge.textContent = isBatch ? '全文翻译中...' : `第 ${targetPageNum} 页 (AI 翻译中...)`;
+
+    const FATAL_ERROR_REGEX = /硬限制|熔断|未配置|401|403|Unauthorized|Insufficient Quota|额度不足/i;
 
     // 5. 跨页断句滑动窗口上下文注入与结构化批量请求 (Context-Aware Sliding Window)
     try {
@@ -4636,7 +4664,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         transResults = await requestBatchTranslation(payload, engine, targetLang, selectedModel, crossPageContext, currentPersona);
       } catch (firstErr) {
-        if (isStale()) throw firstErr;
+        if (isStale() || FATAL_ERROR_REGEX.test(firstErr.message || '')) throw firstErr;
         console.warn(`第 ${targetPageNum} 页批量翻译遇阻，正在退避重试:`, firstErr.message);
         if (isBatch) showToast(`通道繁忙，第 ${targetPageNum} 页启动退避重试...`);
         await new Promise(r => setTimeout(r, 1200));
@@ -4646,7 +4674,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (isStale()) {
         // 已中止或已切换文档：丢弃结果并清理“翻译中...”占位，绝不写入新文档的缓存
         tasksToTranslate.forEach(t => t.overlayBlock && t.overlayBlock.remove());
-        return;
+        return { ok: false, fatal: false, aborted: true };
       }
 
       const transMap = new Map();
@@ -4712,6 +4740,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         }
       }
+      return { ok: true };
     } catch (err) {
       console.error('批量翻译失败:', err);
       transActiveBadge.textContent = `翻译失败: ${err.message}`;
@@ -4722,6 +4751,8 @@ document.addEventListener('DOMContentLoaded', () => {
           t.overlayBlock.textContent = `翻译失败: ${err.message}`;
         }
       });
+      const fatal = FATAL_ERROR_REGEX.test(err.message || '');
+      return { ok: false, fatal, error: err.message || '未知错误' };
     }
   }
 
@@ -4782,6 +4813,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (translateRangeBtn) translateRangeBtn.disabled = true;
     if (summarizeDocBtn) summarizeDocBtn.disabled = true;
 
+    let fatalErrorMsg = '';
+    let failedPagesCount = 0;
+
     for (let p = 1; p <= totalPages; p++) {
       if (activeTranslateController.aborted) break;
 
@@ -4795,18 +4829,36 @@ document.addEventListener('DOMContentLoaded', () => {
         continue;
       }
 
-      await translatePage(p, true);
+      const pageRes = await translatePage(p, true);
       updateThumbnailStatus(p);
+
+      if (pageRes && !pageRes.ok && !pageRes.aborted) {
+        failedPagesCount++;
+        if (pageRes.fatal) {
+          fatalErrorMsg = pageRes.error || '触发安全拦截或鉴权异常';
+          break;
+        }
+      }
 
       // 防限流自适应平滑调度延迟：免Key模式延缓至 850ms 冷却，有Key极速模式 250ms
       const pageCooldownMs = hasPersonalKey ? 250 : 850;
       await new Promise(r => setTimeout(r, pageCooldownMs));
     }
 
-    if (activeTranslateController.aborted) {
+    if (fatalErrorMsg) {
+      transProgressLabel.textContent = `已中止：${fatalErrorMsg}`;
+      transActiveBadge.textContent = '已中止 (触发限制)';
+      showToast(`⚠️ 批量翻译已中止: ${fatalErrorMsg}`, 'error', 5000);
+    } else if (activeTranslateController.aborted) {
       transProgressLabel.textContent = '翻译已停止';
       transActiveBadge.textContent = '已停止';
       showToast('全文翻译已中止');
+    } else if (failedPagesCount > 0) {
+      transProgressFill.style.width = '100%';
+      transProgressLabel.textContent = `翻译结束（${failedPagesCount} 页失败，可点击重译失败页）`;
+      transActiveBadge.textContent = `部分完成 (${failedPagesCount} 页失败)`;
+      showToast(`⚠️ 文档处理完成，但有 ${failedPagesCount} 页翻译失败，可单独补译`, 'warning', 4500);
+      updateTranslateDocButtonState();
     } else {
       transProgressFill.style.width = '100%';
       transProgressLabel.textContent = '全文翻译完成，正在启动下载...';
@@ -4882,6 +4934,9 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast(`💡 提示：当前正在使用 AI 模型 (${activeEngine}) 批量翻译 (${total} 页)，耗时与 Token 消耗较多，可在上方随时中止`, 'info', 4500);
     }
 
+    let fatalErrorMsg = '';
+    let failedPagesCount = 0;
+
     for (let idx = 0; idx < total; idx++) {
       if (activeTranslateController.aborted) break;
       const p = pages[idx];
@@ -4890,7 +4945,14 @@ document.addEventListener('DOMContentLoaded', () => {
       transProgressLabel.textContent = `正在翻译第 ${p} 页 (${idx + 1}/${total} 页, ${percent}%)...`;
 
       if (!isPageTranslated(p)) {
-        await translatePage(p, true);
+        const pageRes = await translatePage(p, true);
+        if (pageRes && !pageRes.ok && !pageRes.aborted) {
+          failedPagesCount++;
+          if (pageRes.fatal) {
+            fatalErrorMsg = pageRes.error || '触发安全拦截或鉴权异常';
+            break;
+          }
+        }
       }
       updateThumbnailStatus(p);
 
@@ -4898,10 +4960,19 @@ document.addEventListener('DOMContentLoaded', () => {
       await new Promise(r => setTimeout(r, 350));
     }
 
-    if (activeTranslateController.aborted) {
+    if (fatalErrorMsg) {
+      transProgressLabel.textContent = `选页翻译已中止：${fatalErrorMsg}`;
+      transActiveBadge.textContent = '已中止 (触发限制)';
+      showToast(`⚠️ 选页翻译已中止: ${fatalErrorMsg}`, 'error', 5000);
+    } else if (activeTranslateController.aborted) {
       transProgressLabel.textContent = '选页翻译已停止';
       transActiveBadge.textContent = '已停止';
       showToast('选页翻译已中止');
+    } else if (failedPagesCount > 0) {
+      transProgressFill.style.width = '100%';
+      transProgressLabel.textContent = `选页翻译结束 (${failedPagesCount} 页失败)`;
+      transActiveBadge.textContent = `部分完成 (${failedPagesCount} 页失败)`;
+      showToast(`⚠️ 选页翻译结束，其中 ${failedPagesCount} 页失败，可点击重译`, 'warning', 4500);
     } else {
       transProgressFill.style.width = '100%';
       transProgressLabel.textContent = `选页翻译完成 (共 ${total} 页)！`;
@@ -6508,6 +6579,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const port = chrome.runtime.connect({ name: 'paper-summary-stream' });
         currentSummaryPort = port;
+        let summaryFinished = false;
 
         port.onMessage.addListener((msg) => {
           if (msg.type === 'start') {
@@ -6519,6 +6591,7 @@ document.addEventListener('DOMContentLoaded', () => {
               summaryContent.innerHTML = formatSummaryMarkdown(lastSummaryMarkdown);
             }
           } else if (msg.type === 'done') {
+            summaryFinished = true;
             if (summaryLoadingSpinner) summaryLoadingSpinner.classList.add('hidden');
             if (summaryStatusLabel) summaryStatusLabel.textContent = '✓ 总结生成完毕 (极速骨干模式)';
             if (summaryContent && (!lastSummaryMarkdown || lastSummaryMarkdown.trim() === '')) {
@@ -6527,6 +6600,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             currentSummaryPort = null;
           } else if (msg.type === 'error') {
+            summaryFinished = true;
             if (summaryLoadingSpinner) summaryLoadingSpinner.classList.add('hidden');
             if (summaryStatusLabel) summaryStatusLabel.textContent = '总结生成出错';
             const isKeyError = String(msg.error || '').includes('API Key') || String(msg.error || '').includes('设置');
@@ -6555,14 +6629,21 @@ document.addEventListener('DOMContentLoaded', () => {
           if (currentSummaryPort === port) {
             currentSummaryPort = null;
           }
+          if (!summaryFinished) {
+            if (summaryLoadingSpinner) summaryLoadingSpinner.classList.add('hidden');
+            if (summaryStatusLabel) summaryStatusLabel.textContent = '连接已断开';
+            if (summaryContent && (!lastSummaryMarkdown || lastSummaryMarkdown.trim() === '')) {
+              summaryContent.innerHTML = `<div style="color:#ef4444; padding:12px; background:rgba(239,68,68,0.08); border-radius:8px; font-size:12.5px; line-height:1.5;">⚠️ 后台总结连接意外断开，请检查扩展状态或重试。</div>`;
+            }
+          }
         });
 
-        const activeEngine = (pdfTranslateEngine && pdfTranslateEngine.value) ? pdfTranslateEngine.value : 'glm';
+        const activeEngine = (pdfTranslateEngine && pdfTranslateEngine.value) ? pdfTranslateEngine.value : '';
         const activeModel = (pdfTranslateModel && pdfTranslateModel.value) ? pdfTranslateModel.value : '';
 
         port.postMessage({
           backbone,
-          engine: isAIEngine(activeEngine) ? activeEngine : 'glm',
+          engine: isAIEngine(activeEngine) ? activeEngine : '',
           targetLang: 'zh-CN',
           model: activeModel
         });

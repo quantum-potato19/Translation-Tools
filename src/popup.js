@@ -43,6 +43,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const popupTokenSettingsLink = document.getElementById('popup-token-settings-link');
 
   let currentRequestId = 0;
+  let currentCleanTranslation = '';
+  let isResultError = false;
   let debounceTimer;
 
   const AI_MODELS = { ...CONST_AI_MODELS };
@@ -294,13 +296,18 @@ document.addEventListener('DOMContentLoaded', () => {
   function performTranslation() {
     const text = sourceText.value.trim();
     if (!text) {
+      currentCleanTranslation = '';
+      isResultError = false;
       resultText.textContent = '翻译结果将在此显示...';
       resultText.classList.add('result-placeholder');
+      resultText.style.color = '';
       loadingSpinner.classList.add('hidden');
       if (starBtn) starBtn.classList.remove('starred');
       return;
     }
 
+    currentCleanTranslation = '';
+    isResultError = false;
     resultText.classList.remove('result-placeholder');
     loadingSpinner.classList.remove('hidden');
     resultText.textContent = '';
@@ -311,10 +318,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const source = srcLang.value;
     const model = modelSelect.value;
 
-    // 检查该词汇在生词本中是否已被收藏，同步更新星标状态
-    chrome.storage.local.get({ vocabularyHistory: [], translationPersona: DEFAULT_PERSONA }, (res) => {
+    // 检查该词汇在生词本中是否已被收藏，同步更新星标状态，同时读取双语备注开关
+    chrome.storage.local.get({
+      vocabularyHistory: [],
+      translationPersona: DEFAULT_PERSONA,
+      enableBilingualNotation: true
+    }, (res) => {
+      if (requestId !== currentRequestId) return;
       const list = res.vocabularyHistory || [];
-      const existing = list.find(item => item.word.toLowerCase() === text.toLowerCase());
+      const existing = list.find(item => (item.word || '').trim().toLowerCase() === text.toLowerCase());
       const isStarred = Boolean(existing && existing.starred);
       if (starBtn) {
         if (isStarred) starBtn.classList.add('starred');
@@ -329,13 +341,15 @@ document.addEventListener('DOMContentLoaded', () => {
         targetLang: target,
         model: model,
         persona: res.translationPersona || DEFAULT_PERSONA,
-        enableBilingualNotation: true,
+        enableBilingualNotation: res.enableBilingualNotation !== false,
         isSelection: true
       }, (response) => {
         if (requestId !== currentRequestId) return;
         loadingSpinner.classList.add('hidden');
 
         if (!response) {
+          currentCleanTranslation = '';
+          isResultError = true;
           resultText.textContent = '翻译出错：未收到后台响应';
           resultText.style.color = '#ff3b30';
           return;
@@ -344,6 +358,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (response.success) {
           resultText.style.color = '';
           const trans = response.translation || '';
+          currentCleanTranslation = trans;
+          isResultError = false;
           if (response.note) {
             resultText.innerHTML = `${escapeHtml(trans)}<div class="term-note" style="margin-top:6px;font-size:11.5px;color:#007aff;opacity:0.85;line-height:1.4;">💡 权威定名备注: ${escapeHtml(response.note)}</div>`;
           } else {
@@ -351,6 +367,8 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           saveVocabularyRecord(text, trans, engine, isStarred);
         } else {
+          currentCleanTranslation = '';
+          isResultError = true;
           resultText.textContent = `翻译出错：${response.error}`;
           resultText.style.color = '#ff3b30';
         }
@@ -387,6 +405,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // 清除输入内容
   clearBtn.addEventListener('click', () => {
     sourceText.value = '';
+    currentCleanTranslation = '';
+    isResultError = false;
     clearBtn.classList.add('hidden');
     resultText.textContent = '翻译结果将在此显示...';
     resultText.classList.add('result-placeholder');
@@ -435,15 +455,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 复制译文
   copyBtn.addEventListener('click', () => {
-    const text = resultText.textContent;
-    if (text && !resultText.classList.contains('result-placeholder')) {
+    if (isResultError || resultText.classList.contains('result-placeholder')) return;
+    const text = currentCleanTranslation || resultText.textContent.trim();
+    if (text && navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(() => {
         const originalHTML = copyBtn.innerHTML;
         copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" stroke="#34c759" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
         setTimeout(() => {
           copyBtn.innerHTML = originalHTML;
         }, 1500);
-      });
+      }).catch(() => {});
     }
   });
 
@@ -461,8 +482,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   speakResBtn.addEventListener('click', () => {
-    if (!resultText.classList.contains('result-placeholder')) {
-      speakText(resultText.textContent.trim(), tgtLang.value);
+    if (!isResultError && !resultText.classList.contains('result-placeholder')) {
+      const cleanRes = currentCleanTranslation || resultText.textContent.trim();
+      speakText(cleanRes, tgtLang.value);
     }
   });
 
@@ -502,9 +524,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // 收藏当前输入词汇
   if (starBtn) {
     starBtn.addEventListener('click', () => {
+      if (isResultError || resultText.classList.contains('result-placeholder')) return;
       const word = sourceText.value.trim();
-      const trans = resultText.textContent.trim();
-      if (!word || !trans || resultText.classList.contains('result-placeholder')) return;
+      const trans = currentCleanTranslation || resultText.textContent.trim();
+      if (!word || !trans) return;
 
       const isStarred = starBtn.classList.toggle('starred');
       saveVocabularyRecord(word, trans, engineSelect.value, isStarred);
@@ -647,6 +670,7 @@ document.addEventListener('DOMContentLoaded', () => {
       a.href = url;
       a.download = `translate-fy-vocabulary-${new Date().toISOString().slice(0, 10)}.md`;
       a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
   }
 
@@ -664,6 +688,7 @@ document.addEventListener('DOMContentLoaded', () => {
       a.href = url;
       a.download = `translate-fy-vocabulary-${new Date().toISOString().slice(0, 10)}.csv`;
       a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
   }
 
@@ -687,8 +712,18 @@ document.addEventListener('DOMContentLoaded', () => {
       if (chrome.runtime.lastError || !res || !res.success || !res.stats) return;
       const stats = res.stats;
       const todayTokens = Number(stats.todayTokens) || 0;
-      const warnLimit = Number(stats.dailyTokenWarnLimit) || 50000;
+      const warnLimit = stats.dailyTokenWarnLimit !== undefined ? Number(stats.dailyTokenWarnLimit) : 50000;
+      const hardLimit = stats.dailyTokenHardLimit !== undefined ? Number(stats.dailyTokenHardLimit) : 200000;
       const formatK = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+
+      if (warnLimit === 0) {
+        popupTokenText.textContent = `今日 AI Token: ${formatK(todayTokens)} (预警关)`;
+        if (popupTokenDot) {
+          popupTokenDot.style.background = (hardLimit > 0 && todayTokens >= hardLimit) ? '#FF3B30' : '#34C759';
+        }
+        return;
+      }
+
       popupTokenText.textContent = `今日 AI Token: ${formatK(todayTokens)} / ${formatK(warnLimit)}`;
 
       if (popupTokenDot) {
@@ -706,7 +741,11 @@ document.addEventListener('DOMContentLoaded', () => {
   if (popupTokenSettingsLink) {
     popupTokenSettingsLink.addEventListener('click', (e) => {
       e.preventDefault();
-      chrome.runtime.openOptionsPage();
+      if (chrome.tabs && chrome.tabs.create) {
+        chrome.tabs.create({ url: chrome.runtime.getURL('options.html#token-monitor') });
+      } else {
+        chrome.runtime.openOptionsPage();
+      }
     });
   }
 

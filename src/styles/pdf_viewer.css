@@ -2039,6 +2039,7 @@ input:checked + .slider:before {
 .pdf-panel {
   position: fixed;
   width: 360px;
+  min-width: 320px;
   min-height: 160px;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.5);
@@ -2085,10 +2086,12 @@ input:checked + .slider:before {
 }
 
 .panel-header {
-  padding: 10px 14px;
+  padding: 10px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   cursor: move;
   user-select: none;
@@ -2110,7 +2113,7 @@ input:checked + .slider:before {
 .panel-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
   flex: 1;
   justify-content: flex-end;
@@ -2122,7 +2125,7 @@ input:checked + .slider:before {
   outline: none;
   font-size: 12px;
   font-weight: 500;
-  padding: 3px 8px;
+  padding: 3px 6px;
   border-radius: 6px;
   color: #374151;
   cursor: pointer;
@@ -2131,6 +2134,18 @@ input:checked + .slider:before {
   white-space: nowrap;
   overflow: hidden;
   flex-shrink: 1;
+}
+
+#pdf-panel-engine-select {
+  max-width: 112px;
+  min-width: 64px;
+  flex: 0 1 auto;
+}
+
+#pdf-panel-model-select {
+  max-width: 120px;
+  min-width: 66px;
+  flex: 1 1 auto;
 }
 
 .panel-close {
@@ -2167,6 +2182,7 @@ input:checked + .slider:before {
   justify-content: center;
   cursor: pointer;
   padding: 0;
+  flex-shrink: 0;
   transition: all 0.15s ease;
 }
 
@@ -3158,6 +3174,106 @@ input:focus-visible {
   .block-micro-btn:hover {
     background: #374151;
     color: #93c5fd;
+  }
+
+  .top-action-btn.outline-btn {
+    background: #252b38;
+    border-color: #3b4252;
+    color: #e5e7eb;
+  }
+
+  .top-action-btn.outline-btn:hover {
+    background: #2f3646;
+    border-color: #4b5563;
+  }
+
+  .page-nav-pill,
+  .zoom-controller,
+  .persona-select-group {
+    background: #252b38;
+    border-color: #3b4252;
+    color: #e5e7eb;
+  }
+
+  .top-select option,
+  .sub-select-inline option,
+  .panel-select option {
+    background: #1e232e;
+    color: #e5e7eb;
+  }
+
+  .pdf-panel {
+    background: rgba(24, 28, 36, 0.94);
+    border-color: rgba(255, 255, 255, 0.14);
+    color: #f3f4f6;
+  }
+
+  .panel-header {
+    background: rgba(30, 35, 46, 0.9);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .panel-logo {
+    color: #f3f4f6;
+  }
+
+  .panel-select {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: #f3f4f6;
+  }
+
+  .panel-source-text {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.08);
+    color: #d1d5db;
+  }
+
+  .panel-result {
+    color: #f3f4f6;
+  }
+
+  .panel-divider {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .panel-icon-btn,
+  .panel-close {
+    background: rgba(255, 255, 255, 0.08);
+    color: #9ca3af;
+  }
+
+  .panel-icon-btn:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: #ffffff;
+  }
+
+  .welcome-box,
+  .advanced-modal-box,
+  .search-modal,
+  .ink-popover {
+    background: #1e232e;
+    border-color: #374151;
+    color: #f3f4f6;
+  }
+
+  .modal-header {
+    border-color: #374151;
+  }
+
+  .modal-item strong,
+  .modal-header h3 {
+    color: #f3f4f6;
+  }
+
+  .modal-item p {
+    color: #9ca3af;
+  }
+
+  .search-input {
+    background: #252b38;
+    border-color: #3b4252;
+    color: #f3f4f6;
   }
 }
 

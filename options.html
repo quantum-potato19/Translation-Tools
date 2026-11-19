@@ -199,10 +199,10 @@
           </div>
         </div>
 
-        <h2 class="section-subtitle">Token 用量与防滥用监控</h2>
+        <h2 id="token-monitor-section" class="section-subtitle">Token 用量与防滥用监控</h2>
         <div class="ios-card" style="padding: 16px;">
           <!-- 统计指标网格 -->
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px;">
+          <div class="token-metrics-grid">
             <div style="background: rgba(0,122,255,0.06); border: 1px solid rgba(0,122,255,0.15); border-radius: 10px; padding: 12px 14px;">
               <span style="font-size: 12px; color: #007AFF; font-weight: 500;">今日 Token 消耗</span>
               <div id="token-stat-today-tokens" style="font-size: 20px; font-weight: 700; color: #1c1c1e; margin-top: 4px;">0</div>
@@ -218,22 +218,23 @@
           </div>
 
           <!-- 用量进度条 -->
-          <div style="margin-bottom: 16px;">
-            <div style="display: flex; justify-content: space-between; font-size: 12px; color: #636366; margin-bottom: 6px;">
-              <span>今日消耗进度 (预警线)</span>
+          <div style="margin-bottom: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #636366; margin-bottom: 6px; gap: 8px; flex-wrap: wrap;">
+              <span>今日消耗进度 <span id="token-hard-limit-badge" class="token-hard-limit-badge"></span></span>
               <span id="token-progress-text">0 / 50,000 Tokens</span>
             </div>
             <div style="width: 100%; height: 7px; background: rgba(0,0,0,0.06); border-radius: 4px; overflow: hidden;">
               <div id="token-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #34C759, #FF9500); border-radius: 4px; transition: width 0.3s ease;"></div>
             </div>
+            <div id="token-engine-breakdown" class="token-engine-pills hidden"></div>
           </div>
 
           <!-- 阈值安全控制 -->
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
             <div>
               <label for="token-warn-limit-input" style="display: block; font-size: 12.5px; font-weight: 500; color: #1c1c1e; margin-bottom: 4px;">每日用量桌面预警阈值</label>
-              <input type="number" id="token-warn-limit-input" min="1000" step="5000" class="ios-input" placeholder="例如 50000">
-              <span style="font-size: 11px; color: #8e8e93;">达到此数值时发送桌面通知，提醒额度消耗</span>
+              <input type="number" id="token-warn-limit-input" min="0" step="5000" class="ios-input" placeholder="例如 50000 (填 0 禁用)">
+              <span style="font-size: 11px; color: #8e8e93;">达到此数值时发送桌面通知，填 0 禁用预警</span>
             </div>
             <div>
               <label for="token-hard-limit-input" style="display: block; font-size: 12.5px; font-weight: 500; color: #1c1c1e; margin-bottom: 4px;">每日硬限制熔断保护阈值</label>

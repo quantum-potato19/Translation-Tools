@@ -1,5 +1,5 @@
 import { DocStorage, formatBytes, formatTimestamp } from './doc_storage.js';
-import { USER_GLOSSARY_KEY, DEFAULT_PERSONA, escapeHtml } from './shared/constants.js';
+import { USER_GLOSSARY_KEY, DEFAULT_PERSONA, TOKEN_LIMIT_DEFAULTS, escapeHtml } from './shared/constants.js';
 
 document.addEventListener('DOMContentLoaded', () => {
   // 1. 侧边栏 Tab 切换逻辑
@@ -610,7 +610,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         chrome.runtime.sendMessage({
           action: 'testModelConnection',
-          provider: 'custom',
+          provider: m.provider || 'custom',
           apiKey: m.apiKey,
           endpoint: m.endpoint,
           modelName: m.modelName
@@ -661,23 +661,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // 右键菜单单独处理同步
+  // 右键菜单单独处理同步 (由 background storage.onChanged 统一维护所有 PDF 右键菜单项)
   if (pdfContextMenu) {
     pdfContextMenu.addEventListener('change', () => {
       saveSettings();
-      if (pdfContextMenu.checked) {
-        chrome.contextMenus.create({
-          id: 'openPdfInExtension',
-          title: '在阅读器中打开此 PDF',
-          contexts: ['link']
-        }, () => {
-          if (chrome.runtime.lastError) {
-            console.log('右键菜单已经存在');
-          }
-        });
-      } else {
-        chrome.contextMenus.remove('openPdfInExtension');
-      }
     });
   }
 
@@ -766,6 +753,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (modalProvider && modalProvider.value !== 'groq') {
           modalProvider.value = 'groq';
           applyProviderTemplate('groq');
+        }
+      } else if (val.startsWith('AIzaSy')) {
+        if (modalProvider && modalProvider.value !== 'gemini') {
+          modalProvider.value = 'gemini';
+          applyProviderTemplate('gemini');
         }
       }
     });
@@ -1151,8 +1143,10 @@ document.addEventListener('DOMContentLoaded', () => {
           const displayName = customAlias
             ? (selectedModelMap.size === 1 ? customAlias : `${customAlias} - ${modelId}`)
             : `${prefix} - ${item.name || modelId}`;
+          const uid = `${Date.now()}_${addedCount}_${Math.random().toString(36).slice(2, 6)}`;
           customModels.push({
-            id: (Date.now() + Math.floor(Math.random() * 10000)).toString(),
+            id: uid,
+            provider: providerKey,
             name: displayName,
             endpoint,
             apiKey,
@@ -1175,7 +1169,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (singleModelName) {
       const displayName = customAlias || `${prefix} - ${singleModelName}`;
       const newModel = {
-        id: Date.now().toString(),
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        provider: providerKey,
         name: displayName,
         endpoint,
         apiKey,
@@ -1428,6 +1423,31 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // RFC-4180 单行 CSV 解析器 (支持引号内逗号与双引号转义)
+  function parseCsvLine(line) {
+    const cols = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === ',' && !inQuotes) {
+        cols.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    cols.push(current.trim());
+    return cols;
+  }
+
   if (glossaryExportCsvBtn) {
     glossaryExportCsvBtn.addEventListener('click', () => {
       if (userGlossary.length === 0) return alert('当前自定义术语库为空');
@@ -1441,6 +1461,7 @@ document.addEventListener('DOMContentLoaded', () => {
       a.href = url;
       a.download = `user_glossary_${new Date().toISOString().slice(0, 10)}.csv`;
       a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
   }
 
@@ -1469,10 +1490,10 @@ document.addEventListener('DOMContentLoaded', () => {
               });
             }
           } else if (file.name.endsWith('.csv')) {
-            const lines = content.split(/\r?\n/).filter(Boolean);
-            const startIdx = lines[0].toLowerCase().includes('term') ? 1 : 0;
+            const lines = content.replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim());
+            const startIdx = (lines[0] && lines[0].toLowerCase().includes('term')) ? 1 : 0;
             for (let i = startIdx; i < lines.length; i++) {
-              const cols = lines[i].split(',').map(s => s.replace(/^"|"$/g, '').trim());
+              const cols = parseCsvLine(lines[i]);
               if (cols[0] && cols[1]) {
                 imported.push({
                   term: cols[0],
@@ -1544,6 +1565,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const tokenStatTotalTokens = document.getElementById('token-stat-total-tokens');
   const tokenProgressText = document.getElementById('token-progress-text');
   const tokenProgressBar = document.getElementById('token-progress-bar');
+  const tokenHardLimitBadge = document.getElementById('token-hard-limit-badge');
+  const tokenEngineBreakdown = document.getElementById('token-engine-breakdown');
   const tokenWarnLimitInput = document.getElementById('token-warn-limit-input');
   const tokenHardLimitInput = document.getElementById('token-hard-limit-input');
   const tokenResetTodayBtn = document.getElementById('token-reset-today-btn');
@@ -1554,25 +1577,58 @@ document.addEventListener('DOMContentLoaded', () => {
     const todayTokens = Number(stats.todayTokens) || 0;
     const todayCalls = Number(stats.todayCalls) || 0;
     const totalTokens = Number(stats.totalTokens) || 0;
-    const warnLimit = Number(stats.dailyTokenWarnLimit) || 50000;
-    const hardLimit = Number(stats.dailyTokenHardLimit) || 200000;
+    const warnLimit = stats.dailyTokenWarnLimit !== undefined
+      ? Number(stats.dailyTokenWarnLimit)
+      : TOKEN_LIMIT_DEFAULTS.dailyTokenWarnLimit;
+    const hardLimit = stats.dailyTokenHardLimit !== undefined
+      ? Number(stats.dailyTokenHardLimit)
+      : TOKEN_LIMIT_DEFAULTS.dailyTokenHardLimit;
 
     if (tokenStatTodayTokens) tokenStatTodayTokens.textContent = todayTokens.toLocaleString();
     if (tokenStatTodayCalls) tokenStatTodayCalls.textContent = `${todayCalls} 次`;
     if (tokenStatTotalTokens) tokenStatTotalTokens.textContent = totalTokens.toLocaleString();
 
+    if (tokenHardLimitBadge) {
+      tokenHardLimitBadge.textContent = hardLimit > 0
+        ? `熔断上限: ${hardLimit.toLocaleString()}`
+        : '熔断保护已关闭';
+    }
+
     if (tokenProgressText) {
-      tokenProgressText.textContent = `${todayTokens.toLocaleString()} / ${warnLimit.toLocaleString()} Tokens`;
+      tokenProgressText.textContent = warnLimit > 0
+        ? `${todayTokens.toLocaleString()} / ${warnLimit.toLocaleString()} Tokens`
+        : `${todayTokens.toLocaleString()} Tokens (预警已关闭)`;
     }
     if (tokenProgressBar) {
-      const pct = Math.min(100, Math.round((todayTokens / (warnLimit || 1)) * 100));
+      const denom = warnLimit > 0 ? warnLimit : (hardLimit > 0 ? hardLimit : 0);
+      const pct = denom > 0 ? Math.min(100, Math.round((todayTokens / denom) * 100)) : 0;
       tokenProgressBar.style.width = `${pct}%`;
-      if (pct >= 100) {
+      if ((hardLimit > 0 && todayTokens >= hardLimit) || (warnLimit > 0 && pct >= 100)) {
         tokenProgressBar.style.background = '#FF3B30';
       } else if (pct >= 80) {
         tokenProgressBar.style.background = '#FF9500';
       } else {
         tokenProgressBar.style.background = 'linear-gradient(90deg, #34C759, #30B0C7)';
+      }
+    }
+
+    if (tokenEngineBreakdown) {
+      const entries = Object.entries(stats.byEngine || {}).filter(([, v]) => Number(v) > 0);
+      if (entries.length === 0) {
+        tokenEngineBreakdown.classList.add('hidden');
+        tokenEngineBreakdown.innerHTML = '';
+      } else {
+        const ENGINE_LABEL_MAP = {
+          glm: '智谱 GLM',
+          gemini: 'Gemini',
+          deepseek: 'DeepSeek',
+          ai_custom: '自定义 AI'
+        };
+        tokenEngineBreakdown.innerHTML = entries.map(([eng, count]) => {
+          const displayEng = ENGINE_LABEL_MAP[eng] || (eng.startsWith('custom_') ? '自定义模型' : eng);
+          return `<span class="token-engine-pill">${escapeHtml(displayEng)}: <strong>${Number(count).toLocaleString()}</strong></span>`;
+        }).join('');
+        tokenEngineBreakdown.classList.remove('hidden');
       }
     }
 
@@ -1593,8 +1649,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (tokenWarnLimitInput || tokenHardLimitInput) {
     const onLimitChange = () => {
-      const warnVal = Math.max(0, parseInt(tokenWarnLimitInput ? tokenWarnLimitInput.value : 50000, 10) || 50000);
-      const hardVal = Math.max(0, parseInt(tokenHardLimitInput ? tokenHardLimitInput.value : 0, 10) || 0);
+      const rawWarn = tokenWarnLimitInput ? parseInt(tokenWarnLimitInput.value, 10) : NaN;
+      const rawHard = tokenHardLimitInput ? parseInt(tokenHardLimitInput.value, 10) : NaN;
+      const warnVal = Number.isFinite(rawWarn) ? Math.max(0, rawWarn) : TOKEN_LIMIT_DEFAULTS.dailyTokenWarnLimit;
+      const hardVal = Number.isFinite(rawHard) ? Math.max(0, rawHard) : TOKEN_LIMIT_DEFAULTS.dailyTokenHardLimit;
       chrome.runtime.sendMessage({
         action: 'updateTokenLimits',
         dailyTokenWarnLimit: warnVal,
@@ -1636,11 +1694,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 初始化加载
+  // 初始化加载与路由锚点直达
   loadSettings();
   loadTokenMonitorStats();
-  if (window.location.hash === '#storage') {
-    const storageTabBtn = document.querySelector('[data-tab="storage"]');
-    if (storageTabBtn) storageTabBtn.click();
+
+  const routeHash = (window.location.hash || '').replace(/^#/, '');
+  const TAB_HASHES = new Set(['general', 'engines', 'glossary', 'pdf-settings', 'storage', 'about']);
+  if (routeHash === 'token-monitor') {
+    const enginesTabBtn = document.querySelector('[data-tab="engines"]');
+    if (enginesTabBtn) enginesTabBtn.click();
+    setTimeout(() => {
+      const targetSec = document.getElementById('token-monitor-section');
+      if (targetSec) targetSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  } else if (TAB_HASHES.has(routeHash)) {
+    const tabBtn = document.querySelector(`[data-tab="${routeHash}"]`);
+    if (tabBtn) tabBtn.click();
   }
 });
